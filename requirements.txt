@@ -8,7 +8,7 @@
 
 # Основные зависимости приложения
 fastapi==0.115.12         # Веб-фреймворк для создания API (обновлено: исправления багов, совместимость с Pydantic 2.11)
-starlette==0.46.2         # ASGI фреймворк с поддержкой Range requests для PDF Fast Web View
+starlette==1.3.1         # ASGI фреймворк с поддержкой Range requests для PDF Fast Web View
 uvicorn[standard]==0.34.3 # ASGI сервер для запуска FastAPI (обновлено: улучшения производительности)
 requests==2.32.4          # HTTP запросы для утилит и скриптов
 python-multipart==0.0.20  # Обработка multipart/form-data для FastAPI (обязательно для request.form())
