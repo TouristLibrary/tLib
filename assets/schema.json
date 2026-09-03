@@ -1,0 +1,123 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Tlib Report Schema",
+  "description": "Схема валидации JSON отчетов. Версия 2.3: удалено поле ИмяФайла (выводится из ID и ТипФайла).",
+  "version": "2.3",
+  "type": "object",
+  "required": ["Шифр"],
+  "additionalProperties": true,
+  "properties": {
+    "Шифр": { 
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 999999,
+      "description": "Основной идентификатор отчета (1-999999)"
+    },
+    "ДопШифр": { 
+      "type": ["string", "null"],
+      "maxLength": 5,
+      "pattern": "^[а-яА-Яa-zA-Z0-9]*$",
+      "description": "Дополнительный шифр, до 10 символов (буквы/цифры) или пустая строка"
+    },
+    "Маршрут": { 
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 5000,
+      "description": "В этом файле не склеивать с Маршрут. В базе для поиска склеивать по шаблону #Шифр-ДопШифр: Маршрут"
+    },
+    "РайонОбщий": { 
+      "type": ["string", "null"],
+      "maxLength": 500,
+      "description": "упорядоченный список"
+    },
+    "Район": { 
+      "type": ["string", "null"],
+      "maxLength": 500,
+      "description": "В этом файле не склеивать с РайонОбщий. В базе для поиска склеивать по шаблону РайонОбщий: Район"
+    },
+    "Автор": { 
+      "type": ["string", "null"],
+      "maxLength": 500
+    },
+    "Город": { 
+      "type": ["string", "null"],
+      "maxLength": 200
+    },
+    "Тип": { 
+      "type": ["string", "null"],
+      "maxLength": 200,
+      "description": "упорядоченный список"
+    },
+    "ТипСудна": { 
+      "type": ["string", "null"],
+      "maxLength": 200
+    },
+    "КатегорияС": { 
+      "type": ["string", "null"],
+      "maxLength": 50,
+      "description": "упорядоченный список"
+    },
+    "КатегорияПо": { 
+      "type": ["string", "null"],
+      "maxLength": 50,
+      "description": "упорядоченный список"
+    },
+    "Год": { 
+      "type": ["integer", "null"],
+      "minimum": 1900,
+      "maximum": 2100,
+      "description": "Год отчета (1900-2100)"
+    },
+    "МесяцС": { 
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 12
+    },
+    "МесяцПо": { 
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 12
+    },
+    "Комментарии": { 
+      "type": ["string", "null"],
+      "maxLength": 10000
+    },
+    "РазмерАрхива": { 
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483648,
+      "description": "размер в байтах (макс 2 ГБ). Если 0, то файл отсутствует."
+    },
+    "ТипФайла": { 
+      "type": ["string", "null"],
+      "enum": ["zip", "pdf", null],
+      "description": "zip или pdf"
+    },
+    "ЗагрузилИмя": { 
+      "type": ["string", "null"],
+      "maxLength": 200,
+      "description": "Имя на того, кто загрузил отчет"
+    },
+    "ЗагрузилID": { 
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "description": "users.id из data.secret/auth.db (auth-БД пользователей). null, если автор неизвестен."
+    },
+    "ДатаВремяЗагрузки": { 
+      "type": ["string", "null"],
+      "format": "date-time",
+      "maxLength": 100
+    },
+    "СтарыйID": { 
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 999999,
+      "description": " идентификатор из конструкции ...doc.aspx?id=28462&page=1... , в данном случае 28462 (нужно для редиректа на новом сайте)"
+    },
+    "КоличествоСтраниц": { 
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "maximum": 10000
+    }
+  }
+}

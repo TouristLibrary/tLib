@@ -1,0 +1,23 @@
+# Автоматическая нормализация окончаний строк для всех текстовых файлов
+* text=auto eol=lf
+
+# Явные правила для различных типов файлов
+*.py text eol=lf
+*.js text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Бинарные файлы (не изменять)
+*.gif binary
+*.svg binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.db binary
+*.xlsx binary
+*.pdf binary

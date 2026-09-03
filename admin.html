@@ -1,0 +1,577 @@
+<!--
+  Version 3.7 - 25.06.2026
+
+  Информационная страница администратора TlibWebApp.
+  Аутентификация: Magic Link + цифровой код (cookie session_token) + role='admin'.
+  Неавторизованные видят только хедер с формой входа и общим статусом.
+  Авторизованные админы видят все панели + секцию управления правами.
+  Стили inline, скрипт — внешний (js/admin.js), т.к. CSP запрещает inline-скрипты.
+  3.7: CSS-значок ▸ у ката «Без входов» (поворачивается при раскрытии, без JS).
+-->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Администрирование · tLib</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    background: #f5f5f5;
+    color: #222;
+    min-height: 100vh;
+  }
+
+  header {
+    background: #fff;
+    border-bottom: 1px solid #ddd;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  @media (max-width: 600px) {
+    header {
+      padding: 10px 16px;
+    }
+    .header-left,
+    .header-right {
+      width: 100%;
+      justify-content: space-between;
+    }
+  }
+
+  #ts {
+    font-size: 12px;
+    color: #888;
+  }
+
+  #refreshBtn {
+    padding: 5px 14px;
+    font-size: 13px;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+    color: #333;
+  }
+
+  #refreshBtn:hover { background: #f0f0f0; }
+  #refreshBtn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  main {
+    max-width: 960px;
+    margin: 20px auto;
+    padding: 0 16px 40px;
+    display: grid;
+    gap: 16px;
+  }
+
+  .card {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .card-header {
+    padding: 10px 16px;
+    background: #fafafa;
+    border-bottom: 1px solid #e8e8e8;
+    font-weight: 600;
+    font-size: 13px;
+    color: #444;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .card-body {
+    padding: 14px 16px;
+  }
+
+  /* Status badge */
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.6;
+  }
+  .badge-ok      { background: #d4edda; color: #155724; }
+  .badge-warn    { background: #fff3cd; color: #856404; }
+  .badge-error   { background: #f8d7da; color: #721c24; }
+  .badge-neutral { background: #e8e8e8; color: #555; }
+
+  /* Grid of kv pairs */
+  .kv-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 8px 16px;
+  }
+
+  .kv-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .kv-label {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .kv-value {
+    font-size: 14px;
+    font-weight: 500;
+    color: #222;
+  }
+
+  /* Compact table */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  th {
+    text-align: left;
+    padding: 6px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: #888;
+    border-bottom: 1px solid #e8e8e8;
+  }
+
+  td {
+    padding: 6px 8px;
+    border-bottom: 1px solid #f0f0f0;
+    color: #333;
+    vertical-align: top;
+  }
+
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #fafafa; }
+
+  .td-id { color: #888; font-size: 12px; white-space: nowrap; }
+  .td-route { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .td-date { color: #888; font-size: 12px; white-space: nowrap; }
+
+  /* Security counters */
+  .sec-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+
+  .sec-item {
+    border: 1px solid #e8e8e8;
+    border-radius: 4px;
+    padding: 8px 12px;
+  }
+
+  .sec-count {
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+
+  .sec-label {
+    font-size: 11px;
+    color: #888;
+    margin-top: 2px;
+  }
+
+  .sec-count-high   { color: #b91c1c; }
+  .sec-count-medium { color: #d97706; }
+  .sec-count-low    { color: #555; }
+  .sec-count-zero   { color: #aaa; }
+
+  /* Top IPs */
+  .ip-list { list-style: none; }
+  .ip-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+    border-bottom: 1px solid #f0f0f0;
+    font-size: 13px;
+  }
+  .ip-list li:last-child { border-bottom: none; }
+  .ip-list .ip-addr { font-family: monospace; }
+  .ip-list .ip-cnt  { color: #888; }
+
+  /* Overall status in header */
+  #overallStatus { font-size: 13px; }
+
+  /* Loading / error states */
+  .state-loading { color: #888; padding: 24px 0; text-align: center; }
+  .state-error   { color: #b91c1c; padding: 12px 16px; font-size: 13px; }
+
+  .section-title {
+    font-size: 12px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 14px 0 8px;
+    font-weight: 600;
+  }
+  .section-title:first-child { margin-top: 0; }
+
+  .cat-summary::before {
+    content: "\25B8";
+    display: inline-block;
+    transition: transform .15s ease;
+  }
+  details[open] .cat-summary::before { transform: rotate(90deg); }
+
+  /* Disk panel */
+  .disk-block {
+    margin-bottom: 20px;
+  }
+  .disk-block:last-child { margin-bottom: 0; }
+
+  .disk-header {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+
+  .disk-mount {
+    font-family: monospace;
+    font-size: 13px;
+    font-weight: 700;
+    color: #333;
+  }
+
+  .disk-stats {
+    font-size: 13px;
+    color: #555;
+  }
+
+  .disk-pct { font-weight: 600; color: #555; }
+  .disk-pct.pct-high { color: #b91c1c; }
+  .disk-pct.pct-med  { color: #d97706; }
+
+  .disk-bar-track {
+    height: 6px;
+    background: #e8e8e8;
+    border-radius: 3px;
+    margin-bottom: 10px;
+    overflow: hidden;
+  }
+
+  .disk-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s;
+  }
+
+  .td-dir  { font-family: monospace; font-size: 12px; white-space: nowrap; }
+  .td-path { font-size: 11px; color: #aaa; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .td-size { text-align: right; white-space: nowrap; font-size: 13px; }
+  .td-pct  { text-align: right; white-space: nowrap; font-size: 13px; color: #666; }
+  .muted   { color: #bbb; }
+
+  /* Traffic stats */
+  .traffic-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 0 24px;
+  }
+
+  .traffic-col {
+    min-width: 0;
+  }
+
+  .traffic-period {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+
+  .traffic-errors {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+
+  /* Auth form in header */
+  #auth-form {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  #auth-form input[type="email"],
+  #auth-form input[type="text"] {
+    padding: 5px 10px;
+    font-size: 13px;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    width: 220px;
+    outline: none;
+    color: #222;
+  }
+
+  #auth-form input[type="email"]:focus,
+  #auth-form input[type="text"]:focus {
+    border-color: #888;
+  }
+
+  #auth-form button {
+    padding: 5px 14px;
+    font-size: 13px;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+    color: #333;
+    white-space: nowrap;
+  }
+
+  #auth-form button:hover { background: #f0f0f0; }
+  #auth-form button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  #auth-msg {
+    font-size: 12px;
+    color: #555;
+    white-space: nowrap;
+    min-width: 200px;
+    text-align: right;
+  }
+
+  /* Auth info in header */
+  #auth-info {
+    display: none;
+    align-items: center;
+    gap: 12px;
+  }
+
+  #auth-email {
+    font-size: 13px;
+    color: #555;
+  }
+
+  #logoutBtn {
+    padding: 5px 14px;
+    font-size: 13px;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+    color: #333;
+  }
+
+  #logoutBtn:hover { background: #f0f0f0; }
+
+  /* No-access message */
+  #no-access-msg {
+    display: none;
+    flex: 1;
+    text-align: center;
+    color: #888;
+    font-size: 13px;
+  }
+
+  /* Admin management section */
+  #admin-mgmt {
+    display: none;
+    max-width: 960px;
+    margin: 0 auto 40px;
+    padding: 0 16px;
+  }
+
+  .mgmt-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+
+  .mgmt-row input[type="email"] {
+    padding: 5px 10px;
+    font-size: 13px;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    width: 260px;
+    outline: none;
+    color: #222;
+  }
+
+  .mgmt-row input[type="email"]:focus { border-color: #888; }
+
+  .mgmt-btn {
+    padding: 5px 14px;
+    font-size: 13px;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+    color: #333;
+  }
+
+  .mgmt-btn:hover { background: #f0f0f0; }
+  .mgmt-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .mgmt-btn-danger {
+    border-color: #f5c6cb;
+    color: #721c24;
+    background: #fff5f5;
+  }
+
+  .mgmt-btn-danger:hover { background: #f8d7da; }
+
+  .mgmt-msg {
+    font-size: 12px;
+    color: #555;
+    margin-top: 4px;
+  }
+
+  .mgmt-msg.ok  { color: #155724; }
+  .mgmt-msg.err { color: #721c24; }
+
+  .admins-table-wrap {
+    margin-top: 12px;
+  }
+
+  .admins-table-wrap table {
+    width: 100%;
+  }
+
+  .td-root-label {
+    font-size: 11px;
+    color: #888;
+    font-style: italic;
+  }
+  /* Dropdown выхода (logoutMenu.js) */
+  .logout-dropdown { background:#fff; border:1px solid #d0d0d0; border-radius:6px; box-shadow:0 4px 14px rgba(0,0,0,.12); padding:4px 0; display:flex; flex-direction:column; }
+  .logout-dropdown-item { background:none; border:none; padding:9px 16px; font-size:13px; color:#333; cursor:pointer; text-align:left; white-space:nowrap; }
+  .logout-dropdown-item:hover { background:#f0f0f0; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <button id="refreshBtn">Обновить</button>
+    <span id="overallStatus"></span>
+    <span id="ts"></span>
+  </div>
+  <span id="no-access-msg">Нужны права администратора</span>
+  <div class="header-right">
+    <div id="auth-form">
+      <span id="auth-msg"></span>
+      <input type="email" id="emailInput" placeholder="Ваш e-mail" autocomplete="email">
+      <button id="sendLinkBtn">Отправить ссылку</button>
+      <input type="text" id="codeInput" placeholder="Код из письма"
+             inputmode="numeric" maxlength="6" autocomplete="one-time-code"
+             style="display:none">
+      <button id="verifyCodeBtn" style="display:none">Войти</button>
+    </div>
+    <div id="auth-info">
+      <span id="auth-email"></span>
+      <button id="logoutBtn">Выйти</button>
+    </div>
+  </div>
+</header>
+
+<main id="main">
+</main>
+
+<div id="admin-mgmt">
+  <div class="card">
+    <div class="card-header">6. Управление правами администраторов</div>
+    <div class="card-body">
+
+      <p class="section-title">Выдать права</p>
+      <div class="mgmt-row">
+        <input type="email" id="grantEmailInput" placeholder="email нового администратора">
+        <button class="mgmt-btn" id="grantBtn">Назначить админом</button>
+      </div>
+      <div id="grant-msg" class="mgmt-msg"></div>
+
+      <p class="section-title" style="margin-top:20px">Текущие администраторы</p>
+      <div class="admins-table-wrap">
+        <div id="admin-list"><span class="badge badge-neutral">Загрузка…</span></div>
+      </div>
+      <div style="margin-top:10px">
+        <button class="mgmt-btn mgmt-btn-danger" id="revokeBtn">Отобрать права у отмеченных</button>
+      </div>
+      <div id="revoke-msg" class="mgmt-msg"></div>
+
+      <p class="section-title" style="margin-top:24px">Настройки уведомлений</p>
+      <div class="mgmt-row" style="align-items:center;gap:8px">
+        <label for="digestTimeInput" style="white-space:nowrap">Дайджест отправляется в</label>
+        <input type="text" id="digestTimeInput"
+               inputmode="numeric" pattern="([01][0-9]|2[0-3]):[0-5][0-9]"
+               placeholder="ЧЧ:ММ" maxlength="5"
+               style="width:70px; text-align:center">
+        <span style="white-space:nowrap">МСК</span>
+        <button class="mgmt-btn" id="saveDigestTimeBtn">Сохранить</button>
+        <button class="mgmt-btn" id="testEmailBtn">Отправить тестовое письмо</button>
+      </div>
+      <div id="digest-msg" class="mgmt-msg"></div>
+
+    </div>
+  </div>
+
+    <div class="card" style="margin-top:16px">
+    <div class="card-header">7. Управление пользователями</div>
+    <div class="card-body">
+
+      <p class="section-title">Входившие</p>
+      <div id="users-list"><span class="badge badge-neutral">Загрузка…</span></div>
+      <div id="users-msg" class="mgmt-msg"></div>
+
+      <details style="margin-top:20px">
+        <summary class="section-title cat-summary" style="cursor:pointer;user-select:none;list-style:none;display:flex;align-items:center;gap:6px">
+          <span>Без входов</span>
+          <span id="users-never-count" style="font-size:11px;color:#aaa"></span>
+        </summary>
+        <div id="users-never-list" style="margin-top:8px"><span class="badge badge-neutral">Загрузка…</span></div>
+      </details>
+
+      <p class="section-title" style="margin-top:20px">Заблокированные</p>
+      <div id="blocked-users-list"><span class="badge badge-neutral">Загрузка…</span></div>
+
+    </div>
+  </div>
+</div>
+
+<script src="js/admin.js" type="module"></script>
+</body>
+</html>

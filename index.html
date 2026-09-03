@@ -1,0 +1,307 @@
+<!--
+  Version 2.28 - 15.07.2026 15:02:00 GMT
+
+  Одностраничный интерфейс веб-приложения tLib: содержит разметку панели поиска, таблицы результатов,
+  футера и встроенный SVG-спрайт иконок. Управление UI и логикой поиска выполняется через модульные
+  скрипты, подключенные как ES modules. Логотип в шапке открывает страницу about.html в новой вкладке
+  и показывает подсказку «О проекте» при наведении.
+  2.27: удалён тестовый баннер; добавлена microdata WebSite на html-элемент и h3-заголовок.
+  2.28: аудит редизайна — семантические теги (aside/header/footer/main вместо div);
+  обводка иконок унифицирована до stroke-width 2.5; убран дублирующий инлайн-стиль
+  #errorMsg; убрана дублирующаяся строка в подсказке селекта ДопШифр.
+-->
+<!DOCTYPE html>
+<html lang="ru" itemscope itemtype="https://schema.org/WebSite">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <!--SEO_HEAD--><title>Библиотека отчетов о спортивных походах</title>
+    <meta name="description" content="Крупнейшая библиотека отчётов о спортивных туристских походах: поиск по району, виду туризма, категории сложности, году и автору. Архив МГЦТК и региональных турклубов."><!--/SEO_HEAD-->
+    <link rel="icon" type="image/x-icon" href="assets/favicon.ico">
+    <!-- Критические стили для предотвращения FOUC -->
+    <style>
+        /* Скрываем кнопки с иконками до загрузки основного CSS */
+        .sidebar-collapse-btn,
+        .sidebar-expand-btn,
+        #clearFormBtn {
+            visibility: hidden;
+        }
+        /* Анимация спиннера для loading-плейсхолдера (до загрузки основного CSS) */
+        @keyframes spin {
+            0%   { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+    <!-- Preload для приоритетной загрузки CSS -->
+    <link rel="preload" href="css/styles.css" as="style">
+    <link rel="stylesheet" href="css/styles.css">
+    <!-- Modulepreload: параллельная загрузка всех ES-модулей вместо каскадной.
+         Список должен содержать ВСЕ модули из дерева зависимостей entry point (js/main.js).
+         При добавлении/удалении/переименовании .js файла — обновите этот список. -->
+    <link rel="modulepreload" href="js/utils/freeze.js">
+    <link rel="modulepreload" href="js/utils/fetchUtils.js">
+    <link rel="modulepreload" href="js/utils/urlUtils.js">
+    <link rel="modulepreload" href="js/utils/sanitize.js">
+    <link rel="modulepreload" href="js/config/api.config.js">
+    <link rel="modulepreload" href="js/config/ui.config.js">
+    <link rel="modulepreload" href="js/config/messages.config.js">
+    <link rel="modulepreload" href="js/config/files.config.js">
+    <link rel="modulepreload" href="js/config/tabs.config.js">
+    <link rel="modulepreload" href="js/config/misc.config.js">
+    <link rel="modulepreload" href="js/config/constants.js">
+    <link rel="modulepreload" href="js/core/errorHandler.js">
+    <link rel="modulepreload" href="js/core/appState.js">
+    <link rel="modulepreload" href="js/services/archiveService.js">
+    <link rel="modulepreload" href="js/services/cacheWarmService.js">
+    <link rel="modulepreload" href="js/services/authService.js">
+    <link rel="modulepreload" href="js/modules/fileUtils.js">
+    <link rel="modulepreload" href="js/services/serverConfigService.js">
+    <link rel="modulepreload" href="js/modules/search.js">
+    <link rel="modulepreload" href="js/services/referenceListsService.js">
+    <link rel="modulepreload" href="js/modules/redirect.js">
+    <link rel="modulepreload" href="js/modules/ui.js">
+    <link rel="modulepreload" href="js/modules/ui/utils.js">
+    <link rel="modulepreload" href="js/modules/ui/form.js">
+    <link rel="modulepreload" href="js/modules/ui/dataFormatter.js">
+    <link rel="modulepreload" href="js/modules/ui/controller.js">
+    <link rel="modulepreload" href="js/modules/ui/results/index.js">
+    <link rel="modulepreload" href="js/modules/ui/results/table.js">
+    <link rel="modulepreload" href="js/modules/ui/results/single.js">
+    <link rel="modulepreload" href="js/modules/ui/results/viewers/viewStateManager.js">
+    <link rel="modulepreload" href="js/modules/ui/results/viewers/viewerHelpers.js">
+    <link rel="modulepreload" href="js/modules/ui/results/viewers/tabController.js">
+    <link rel="modulepreload" href="js/modules/ui/results/viewers/pdfViewer.js">
+    <link rel="modulepreload" href="js/modules/ui/results/viewers/imageViewer.js">
+    <link rel="modulepreload" href="js/modules/ui/results/viewers/trackViewer.js">
+    <link rel="modulepreload" href="js/modules/sidebarAuth.js">
+</head>
+<body>
+    <div class="main-content">
+        <aside class="sidebar">
+        <div class="search-panel">
+            <header class="search-header">
+                <a id="sidebarToggle" class="sidebar-toggle-btn"
+                   href="about.html"
+                   target="_blank"
+                   rel="noopener"
+                   title="О проекте"
+                   aria-label="О проекте">
+                    <img src="assets/tlib.gif" alt="Логотип" class="header-logo">
+                </a>
+                <a href="#" id="headerReloadLink" class="header-title-link">
+                    <h3 itemprop="name">Библиотека отчетов о спортивных походах</h3>
+                </a>
+                <button id="sidebarCollapseBtn" class="sidebar-control-btn sidebar-collapse-btn" 
+                        aria-label="Свернуть панель"
+                        title="Свернуть панель"
+                        type="button">
+                    <svg class="collapse-icon" aria-hidden="true">
+                        <use href="#icon-panel-left-close"></use>
+                    </svg>
+                </button>
+                <button id="sidebarExpandBtn" class="sidebar-control-btn sidebar-expand-btn"
+                        aria-label="Развернуть панель"
+                        title="Развернуть панель"
+                        type="button">
+                    <svg class="expand-icon" aria-hidden="true">
+                        <use href="#icon-panel-left-close"></use>
+                    </svg>
+                </button>
+            </header>
+            <form id="searchForm" method="get">
+                <label class="full"> <textarea name="Маршрут" placeholder="Маршрут" rows="2" title="Поиск по Маршруту и строгий поиск по Шифр-ДопШифр"></textarea></label>
+                <label><input name="Шифр" type="number" min="0" placeholder="Шифр"></label>
+                <label>
+                    <select name="ДопШифр" id="dopShifrSelect" title="без доп.шифра - библиотека МГЦТК
+ТССР - библиотека ТССР 
+TULA- библиотека ФСТ Тульской области
+STK - библиотека СТК Екатеринбурга 
+ULSK - библиотека клуба туристов города Ульяновска 
+FRT - отчеты из архива Федерации спортивного туризма Республики Татарстан; 
+TLIB и другие доп.шифры - самостоятельно загруженный отчет">
+                        <option value="">Загрузка...</option>
+                    </select>
+                </label>
+                <label class="full">
+                    <select name="РайонОбщий" id="raionObshiySelect">
+                        <option value="">Загрузка...</option>
+                    </select>
+                </label>
+                <label class="full"><input name="Район" type="text" placeholder="Район" title="Поиск по Району и Общему району"></label>
+                <label><input name="Автор" type="text"  placeholder="Автор"></label>
+                <label>
+                    <select name="Тип" id="tipSelect">
+                        <option value="">Загрузка...</option>
+                    </select>
+                </label>
+                <label>
+                    <select name="КатегорияС" id="kategoriaSSelect">
+                        <option value="">Загрузка...</option>
+                    </select>
+                </label>
+                <label>
+                    <select name="КатегорияПо" id="kategoriaPoSelect">
+                        <option value="">Загрузка...</option>
+                    </select>
+                </label>
+                <label><input name="ГодС" type="number" min="0" placeholder="Год с"></label>
+                <label><input name="ГодПо" type="number" min="0" placeholder="Год по"></label>
+                <label>
+                    <select name="МесяцС">
+                        <option value="">Месяц с</option>
+                        <option value="1">Январь</option>
+                        <option value="2">Февраль</option>
+                        <option value="3">Март</option>
+                        <option value="4">Апрель</option>
+                        <option value="5">Май</option>
+                        <option value="6">Июнь</option>
+                        <option value="7">Июль</option>
+                        <option value="8">Август</option>
+                        <option value="9">Сентябрь</option>
+                        <option value="10">Октябрь</option>
+                        <option value="11">Ноябрь</option>
+                        <option value="12">Декабрь</option>
+                    </select>
+                </label>
+                <label>
+                    <select name="МесяцПо">
+                        <option value="">Месяц по</option>
+                        <option value="1">Январь</option>
+                        <option value="2">Февраль</option>
+                        <option value="3">Март</option>
+                        <option value="4">Апрель</option>
+                        <option value="5">Май</option>
+                        <option value="6">Июнь</option>
+                        <option value="7">Июль</option>
+                        <option value="8">Август</option>
+                        <option value="9">Сентябрь</option>
+                        <option value="10">Октябрь</option>
+                        <option value="11">Ноябрь</option>
+                        <option value="12">Декабрь</option>
+                    </select>
+                </label>
+                <label class="full"><input name="ЗагруженоС" type="text" placeholder="Загружено с"></label>
+                <div class="sort-controls full">
+                    <select name="sortColumn" id="sortSelect">
+                        <option value="">Сортировка</option>
+                        <option value="Год">Дата похода</option>
+                        <option value="Категория">Категория</option>
+                        <option value="ДатаВремяЗагрузки">Дата загрузки</option>
+                    </select>
+                    <input type="hidden" name="sortOrder" id="sortOrderInput" value="desc">
+                    <button type="button" id="sortDirectionBtn" title="Направление сортировки">
+                        <svg width="14" height="14" aria-hidden="true"><use href="#icon-triangle-up"></use></svg>
+                    </button>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" id="searchButton" disabled>Поиск</button>
+                    <button type="button" id="clearFormBtn" title="Очистить форму">
+                        <svg class="clear-icon" aria-hidden="true"><use href="#icon-cross"></use></svg>
+                    </button>
+                </div>				
+            </form>
+        </div>
+        <!-- ============================================== -->
+        <!-- FOOTER: COPYRIGHT AND CONTACT INFO            -->
+        <!-- Version: 1.0.4 | Date: 30.12.2025 22:07:22 GMT -->
+        <!-- Функционал: Футер с информацией о проекте,    -->
+        <!-- счетчиком отчетов, контактами и копирайтом.   -->
+        <!-- Добавлены критические инлайн-стили и preload  -->
+        <!-- директива для устранения FOUC при загрузке.   -->
+        <!-- ============================================== -->
+        <footer class="search-footer">
+            <div id="reportsCount" class="footer-reports-count">Крупнейшее в рунете хранилище отчетов о спортивных походах, содержит <strong id="reportsNumber"></strong> отчетов. <a href="about.html" target="_blank" rel="noopener noreferrer" title="история, список участников, ссылки на скачивание каталога и всей библиотеки">О проекте tLib.</a></div>
+            <div class="footer-archive-info">Спонсор проекта <a href="https://www.runa.ru/" target="_blank" rel="noopener noreferrer">консалтинговая группа РУНА</a>.<br>Дружественные проекты: <a href="https://westra.ru" target="_blank" rel="noopener noreferrer" title="помощь в переводе отсканированных отчетов в pdf">westra.ru</a>; <a href="https://hikeplan.ru" target="_blank" rel="noopener noreferrer" title="анализ маршрутов и подготовка к походам">hikeplan.ru</a></div>			
+            <div>(ↄ) 2002-2026 (сборка 15.07.2026)</div>
+            <div class="footer-auth-actions">
+                <a id="publishReportBtn" href="upload.html" class="footer-publish-btn" target="_blank" rel="noopener" aria-disabled="true">Опубликовать отчет</a>
+                <button type="button" id="sidebarAuthBtn" class="footer-auth-btn" title="Войти" aria-label="Войти">
+                    <svg class="auth-icon auth-icon-login" aria-hidden="true"><use href="#icon-log-in"></use></svg>
+                    <svg class="auth-icon auth-icon-logout" aria-hidden="true"><use href="#icon-log-out"></use></svg>
+                </button>
+            </div>
+            <div id="errorMsg"></div>
+        </footer>
+        <!-- ============================================== -->
+        </aside>
+	    <main class="results-panel">
+			<div id="results-scroll">
+				<div id="results">
+                <!--SEO_CONTENT--><div id="app-loader" style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:16px;text-align:center;">
+                        <div style="width:40px;height:40px;border:4px solid rgba(0,0,0,0.1);border-top-color:#3073b7;border-radius:50%;animation:spin .8s linear infinite;"></div>
+                        <div style="font-size:16px;color:#666;">Загрузка библиотеки...</div>
+                    </div><!--/SEO_CONTENT-->
+                </div>
+			</div>			
+        </main>
+    </div>
+    
+    <!-- SVG иконки (только используемые) -->
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+      <symbol id="arrow-up-right" viewBox="0 0 24 24">
+        <path d="M6 18 L18 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+        <path d="M13 6 L18 6 L18 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </symbol>
+      <symbol id="arrow-down-to-line" viewBox="0 0 24 24">
+        <path d="M4 19 L20 19" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M12 0 L12 17" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+        <path d="M7 12 L12 17 L17 12" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </symbol>
+      <symbol id="icon-share" viewBox="0 0 24 24">
+        <path d="M6 12 L18 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+        <path d="M6 12 L18 18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+        <circle cx="6" cy="12" r="4" fill="currentColor"/>
+        <circle cx="6" cy="12" r="2" fill="white"/>
+        <circle cx="18" cy="6" r="4" fill="currentColor"/>
+        <circle cx="18" cy="6" r="2" fill="white"/>
+        <circle cx="18" cy="18" r="4" fill="currentColor"/>
+        <circle cx="18" cy="18" r="2" fill="white"/>
+      </symbol>
+      <symbol id="icon-exchange" viewBox="0 0 24 24">
+        <path d="M4 6 L20 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+        <path d="M15 1 L20 6 L15 11" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M20 18 L4 18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+        <path d="M9 13 L4 18 L9 22" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </symbol>
+      <symbol id="icon-book" viewBox="0 0 449 512.36">
+        <path fill="currentColor" d="M74.68 0H434.6v401.7c-.66 11.22-15.14 11.48-30.82 10.78H69.36c-52.32 0-52.3 70.41 0 70.41h348.83v-37.72l30.81-.03v49.1c0 9.69-7.92 17.61-17.61 17.61H70.9C28.13 515.6 0 498.59 0 459.6V74.68C0 33.6 33.6 0 74.68 0z"/>
+        <path fill="white" d="M303.81 193.19c6.36.26 10.87 2.37 13.47 6.33 7.06 10.6-2.58 21.05-9.27 28.42l-71.4 64.98c-7.11 7.87-17.21 7.87-24.3 0l-73.09-66.96c-6.28-7.06-14.04-16.67-7.5-26.44 2.66-3.96 7.14-6.07 13.49-6.33h38.47v-60.61c0-10.5 8.57-19.07 19.07-19.07h43.68c10.52 0 19.09 8.65 19.09 19.07v60.61h38.29z"/>
+      </symbol>
+      <symbol id="icon-check" viewBox="0 0 24 24">
+        <path d="M5 12 L10 17 L19 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </symbol>
+      <symbol id="icon-triangle-down" viewBox="0 0 24 24">
+        <path d="M4 7 L12 19 L20 7 Z" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </symbol>
+      <symbol id="icon-triangle-up" viewBox="0 0 24 24">
+        <path d="M4 17 L12 5 L20 17 Z" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </symbol>
+      <symbol id="icon-triangle-both" viewBox="0 0 24 24">
+        <path d="M4 9 L12 3 L20 9 Z" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M4 15 L12 21 L20 15 Z" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </symbol>
+      <symbol id="icon-cross" viewBox="0 0 24 24">
+        <path d="M6 6 L18 18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+        <path d="M18 6 L6 18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+      </symbol>
+      <symbol id="icon-panel-left-close" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="18" height="18" rx="2" stroke="currentColor" stroke-width="2.5" fill="none"/>
+        <path d="M9 3 V21" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+        <path d="M16 15 L13 12 L16 9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+      </symbol>
+      <symbol id="icon-log-in" viewBox="0 0 24 24">
+        <path d="M15 3 H19 C20.1 3 21 3.9 21 5 V19 C21 20.1 20.1 21 19 21 H15" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M10 17 L15 12 L10 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M15 12 H3" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+      </symbol>
+      <symbol id="icon-log-out" viewBox="0 0 24 24">
+        <path d="M9 21 H5 C3.9 21 3 20.1 3 19 V5 C3 3.9 3.9 3 5 3 H9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M16 17 L21 12 L16 7" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        <path d="M21 12 H9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+      </symbol>
+    </svg>
+    
+    <!-- Подключаем модульный код -->
+    <script type="module" src="js/main.js"></script>
+</body>
+</html> 
