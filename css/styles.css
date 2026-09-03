@@ -1,0 +1,1589 @@
+/*
+   Version 2.31 - 15.07.2026 16:50:00 GMT
+
+   Универсальные стили для адаптивного интерфейса поиска по архиву турклуба.
+   Определяет общую типографику, сетку страницы, стили формы/таблицы и оформление
+   карточки единичного результата с табами, включая встроенные viewer'ы (PDF, изображения, треки).
+   Дополнительно: plain-mode (hash plain=1) — скрывает оформление и оставляет чистый fullscreen viewer.
+   Также содержит стили UI для сворачивания/разворачивания боковой панели на десктопе.
+   Логотип в шапке кликабелен (курсор pointer).
+   v2.27: кнопке "Поиск" задана мин. высота под 2 строки — счётчик "(найдено N)"
+   больше не меняет высоту кнопки и крестика очистки формы.
+   v2.28: добавлен focus-ring для ссылок (a:focus-visible); цвета спиннеров
+   и ссылок в состояниях загрузки/ошибки viewer'а приведены к токенам
+   --color-primary/--color-primary-dark вместо жёсткого bootstrap-синего.
+   v2.29: аудит редизайна — :active-состояния кнопок; 100vh→100dvh; единый
+   акцентный красный (--color-accent) вместо точечных красных; токены
+   --border-radius-lg/--z-*/--color-disabled/--shadow-color вместо хардкода;
+   tabular-nums для чисел, scroll-behavior: smooth, text-wrap на заголовке/футере.
+   v2.30: исправлен overflow полей формы — minmax(0, 1fr) вместо 1fr в form,
+   min-width: 0 у label и у input/select/textarea (снимает intrinsic-минимум
+   инпутов от атрибута size, из-за которого поля вылезали за границу плашки).
+   v2.31: настоящая причина overflow — нативные input/textarea рендерились как
+   content-box (универсальный * box-sizing до них не доходил), поэтому width:100%
+   не включал padding+border (+18px). Добавлен явный box-sizing: border-box
+   контролам формы; select уже был border-box и вставал по грани.
+*/
+
+/* ------------------- Сброс и базовые настройки ------------------- */
+/* Универсальный box-sizing и сброс отступов для базовой стабильности сетки */
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+/* ------------------- CSS-переменные ------------------- */
+:root {
+    /* Цвета */
+    --color-primary: #3073b7;
+    --color-primary-dark: #235a8d;
+    --color-accent: #d74444;
+    --color-text: #333;
+    --color-text-muted: #666;
+    --color-border: #ccc;
+    --color-border-light: #ddd;
+    --color-bg: #f8f8f8;
+    --color-bg-light: #fff;
+    --color-bg-panel: #fafcff;
+    --color-disabled: #9aa1ab;
+    --shadow-color: 35, 90, 141; /* rgb(--color-primary-dark) — тонированные тени вместо чистого чёрного */
+
+    /* Размеры */
+    --button-size: 38px;
+    /* Мин. высота кнопки «Поиск»: место под 2 строки (текст + «найдено N»),
+       чтобы счётчик не менял высоту кнопки: 2 × (15px × 1.2) + 2 × 5px padding */
+    --search-button-min-height: 46px;
+    --border-radius: 4px;
+    --border-radius-lg: 8px;
+    --viewer-min-height: 500px;
+    --viewer-mobile-height: 60vh;
+    --max-content-width: 1920px;
+    --sidebar-collapsed-width: 68px;
+    --table-min-width: 900px;
+    
+    /* Переходы */
+    --transition-fast: 0.15s ease;
+    --transition-normal: 0.2s;
+    
+    /* Отступы и размеры */
+    --spacing-xs: 4px;
+    --spacing-sm: 6px;
+    --spacing-md: 8px;
+    --spacing-base: 10px;
+    --spacing-lg: 16px;
+    --spacing-xl: 20px;
+    
+    --form-gap: 6px;
+    --form-padding-vertical: 10px;
+    --form-padding-horizontal: 20px;
+    
+    --input-padding-vertical: 5px;
+    --input-padding-horizontal: 8px;
+    
+    --table-padding-vertical: 4px;
+    --table-padding-horizontal: 8px;
+    
+    /* Размеры шрифтов */
+    --font-size-sm: 13px;
+    --font-size-base: 14px;
+    --font-size-lg: 16px;
+    --font-size-xl: 18px;
+    
+    /* Высоты viewer'ов */
+    --viewer-height: calc(100dvh - 200px);
+    --viewer-bottom-offset-desktop: 20px;
+    
+    /* Hover-состояния */
+    --hover-bg-subtle: #e8f0f8;       /* Подсветка интерактивных областей */
+    --hover-scale-icon: 1.1;          /* Увеличение иконок */
+
+    /* Шкала z-index */
+    --z-sticky: 2;
+    --z-raised: 10;
+    --z-fullscreen: 100;
+}
+
+/* ------------------- Базовые стили страницы ------------------- */
+/* Плавный скролл при переходах по якорным ссылкам */
+html {
+    scroll-behavior: smooth;
+}
+
+/* Фон, шрифт и базовый внешний отступ для body */
+body {
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--color-bg);
+    margin: 0;
+    overflow: auto;
+    height: auto;
+}
+
+/* Фиксированная высота только для главной страницы (десктоп) */
+body:has(.main-content) {
+    overflow: hidden;
+    height: 100dvh;
+}
+
+
+/* Заголовки без верхнего отступа */
+h2 { margin-top: 0; }
+
+/* ------------------- Форма поиска ------------------- */
+/* Сетка формы с двумя колонками, стилизация рамки, тени и скругления */
+form {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;    
+    background: var(--color-bg-light);
+    border: 1px solid var(--color-border);
+    border-radius: var(--border-radius);
+    padding: 8px 12px;
+    box-shadow: 0 1px 4px rgba(var(--shadow-color), 0.04);
+	margin-right: 0;
+}
+
+/* Подписи к полям — вертикальное расположение, уменьшенный шрифт */
+label {
+    display: flex;
+    flex-direction: column;
+    font-size: var(--font-size-base);
+    color: var(--color-text);
+    min-width: 0; /* позволяет ужиматься в грид-трек формы, не распирая его */
+}
+
+/* Унифицированные стили для всех элементов ввода */
+input[type="text"],
+input[type="number"],
+input[type="date"],
+select,
+textarea {
+    margin-top: var(--spacing-xs);
+    padding: var(--input-padding-vertical) var(--input-padding-horizontal);
+    font-size: var(--font-size-sm);
+    font-family: inherit;
+    border: 1px solid var(--color-border);
+    border-radius: var(--border-radius);
+    background: #f9f9f9;
+    transition: border-color var(--transition-normal);
+    box-sizing: border-box; /* явно: у нативных input/textarea width:100% должен включать padding+border (универсальный * не срабатывает на них), иначе +18px overflow за плашку */
+    width: 100%;           /* 100% ширина внутри label */
+    max-width: 100%;       /* не выходит за пределы контейнера */
+    min-width: 0;          /* снимает intrinsic-минимум (size у input), даёт реально ужаться */
+    outline: 0;
+}
+
+/* Эффект фокуса для ввода и select */
+select:focus,
+input:focus,
+textarea:focus {
+    border-color: var(--color-primary);
+}
+
+/* Видимое кольцо фокуса при клавиатурной навигации */
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: -1px;
+}
+
+button:focus-visible,
+a:focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+}
+
+/* Стили для placeholder select: JS должен менять класс, чтобы цвет текста был несерый при выборе */
+select {
+    color: gray;
+    transition: color 0.2s;
+}
+select.not-placeholder {
+    color: black;
+}
+
+/* Стили для полей даты: серый текст когда пусто, черный когда заполнено */
+input[type="date"] {
+    color: gray;
+}
+input[type="date"]:valid {
+    color: black;
+}
+
+/* Скрываем встроенные элементы date input (календарь открывается через JS) */
+input[type="date"]::-webkit-inner-spin-button,
+input[type="date"]::-webkit-calendar-picker-indicator {
+    display: none;
+    -webkit-appearance: none;
+}
+
+/* Элемент, занимающий всю ширину формы (например, для textarea или длинных полей) */
+.full {
+    grid-column: 1 / -1; /* Автоматически занимает все колонки сетки */
+}
+
+/* Индивидуальный отступ для выбора файла */
+#dbFile { margin-bottom: 14px; }
+
+/* Сообщение об ошибке (выделяется красным) */
+#errorMsg { color: var(--color-accent); }
+
+/* ------------------- Кнопки внизу формы ------------------- */
+/* Контейнер для кнопок формы: на всю ширину, с зазором между кнопками */
+.form-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: var(--spacing-base);
+    margin-top: var(--spacing-xs);
+    width: 100%;
+}
+
+/* Кнопка "Поиск": растягивается на всё доступное пространство */
+.form-actions button[type="submit"] {
+    flex: 1 1 auto;
+    min-height: var(--search-button-min-height);
+    line-height: 1.2;
+    background: var(--color-primary);
+    color: var(--color-bg-light);
+    border: none;
+    padding: var(--input-padding-vertical) 24px;
+    cursor: pointer;
+    transition: background var(--transition-normal), transform 0.1s;
+    border-radius: var(--border-radius);
+    font-size: 15px;
+    font-weight: 500;
+}
+
+/* Кнопка Поиск — затемнение при наведении */
+.form-actions button[type="submit"]:hover {
+    background: var(--color-primary-dark);
+}
+
+/* Кнопка Поиск — вдавливание при нажатии (кроме неактивной) */
+.form-actions button[type="submit"]:active:not(:disabled) {
+    transform: translateY(1px);
+}
+
+/* Кнопка в состоянии загрузки/неактивная */
+.form-actions button[type="submit"]:disabled {
+    background: var(--color-disabled);
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
+.form-actions button[type="submit"]:disabled:hover {
+    background: var(--color-disabled);
+}
+
+/* Анимация точек загрузки */
+.form-actions button[type="submit"].loading::after {
+    content: '';
+    animation: loadingDots 1.5s infinite;
+}
+
+@keyframes loadingDots {
+    0%, 20% {
+        content: '';
+    }
+    40% {
+        content: '.';
+    }
+    60% {
+        content: '..';
+    }
+    80%, 100% {
+        content: '...';
+    }
+}
+
+/* Кнопка "Очистить": квадратная, фиксированная ширина и высота */
+.form-actions #clearFormBtn {
+    flex: 0 0 auto;
+    padding: var(--input-padding-vertical) 8px;
+    aspect-ratio: 1;
+    background: #e2e4e8;
+    color: var(--color-accent);
+    border: none;
+    font-size: 22px;
+    font-weight: bold;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--border-radius);
+    transition: background var(--transition-normal), color var(--transition-normal), transform 0.1s;
+    visibility: visible; /* Переопределяем инлайн-стиль из HTML */
+}
+
+/* Кнопка Очистить — смена на акцентный цвет */
+.form-actions #clearFormBtn:hover {
+    background: var(--color-accent);
+    color: var(--color-bg-light);
+}
+
+.form-actions #clearFormBtn:active {
+    transform: translateY(1px);
+}
+.form-actions #clearFormBtn .clear-icon {
+    width: 22px;
+    height: 22px;
+}
+
+/* ------------------- Контрол сортировки в форме ------------------- */
+.sort-controls {
+    display: flex;
+    gap: var(--spacing-base);
+    align-items: stretch;
+    margin-top: var(--spacing-xs);
+}
+
+.sort-controls select {
+    flex: 1 1 auto;
+    margin-top: 0;
+}
+
+#sortDirectionBtn {
+    flex: 0 0 auto;
+    padding: var(--input-padding-vertical) 8px;
+    aspect-ratio: 1;
+    background: #e2e4e8;
+    color: var(--color-accent);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--border-radius);
+    transition: background var(--transition-normal), transform 0.1s;
+}
+
+#sortDirectionBtn:hover {
+    background: var(--hover-bg-subtle);
+}
+
+#sortDirectionBtn:active {
+    transform: translateY(1px);
+}
+
+
+/* ------------------- Заголовок с логотипом ------------------- */
+/* Новый layout заголовка с разделением логотипа и текста */
+.search-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-bottom: 6px;
+    margin-bottom: 0;
+    position: relative; /* для позиционирования кнопки сворачивания */
+}
+
+/* Кнопка с логотипом - теперь просто контейнер */
+.sidebar-toggle-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+/* Логотип: фиксированная высота, скругление */
+.header-logo {
+    height: 40px;
+    width: auto;
+    border-radius: 4px;
+    transition: opacity 0.2s;
+}
+
+/* Ссылка на заголовок для перезагрузки */
+.header-title-link {
+    text-decoration: none;
+    color: inherit;
+    flex: 1;
+}
+
+.header-title-link h3 {
+    margin: 0;
+    text-wrap: balance;
+}
+
+/* Общие стили для кнопок управления sidebar */
+.sidebar-control-btn {
+    position: absolute;
+    top: 50%;
+    right: 3px;
+    transform: translateY(-50%);
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity var(--transition-normal), visibility var(--transition-normal), background var(--transition-normal);
+    z-index: var(--z-raised);
+}
+
+.sidebar-control-btn:hover {
+    background: transparent;
+}
+
+/* Иконки внутри кнопок */
+.sidebar-control-btn svg {
+    width: 20px;
+    height: 20px;
+    color: var(--color-primary);
+    fill: none;
+}
+
+/* Специфика для кнопки разворачивания */
+.sidebar-expand-btn svg {
+    transform: scaleX(-1); /* зеркалим icon-panel-left-close для обратного направления */
+}
+
+/* ------------------- Таблица с результатами ------------------- */
+/* Стилизация таблицы: схлопывание границ, ширина на всю строку */
+table {
+    margin: 0;
+    padding: 0;
+	border-collapse: collapse;
+    width: 100%;
+    min-width: var(--table-min-width);
+}
+th, td {
+	border-top: 1px solid #999;
+    padding: var(--table-padding-vertical) var(--table-padding-horizontal);
+    font-size: var(--font-size-base);
+}
+
+th {
+    background: var(--color-bg);
+    position: sticky;
+    top: 0;
+    z-index: var(--z-sticky);
+    border: 1px solid #999; /* Полная рамка вокруг каждой ячейки */
+    overflow: visible;
+}
+th::before {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; top: -1px;
+    height: 1px; /* можно подобрать 1px или 2px */
+    background: var(--color-bg);
+    z-index: calc(var(--z-sticky) + 1);
+    display: block;
+}
+
+/* Интерактивные области — единый hover */
+.tab-button:hover,
+.report-number:hover,
+.share-row:hover {
+    background-color: var(--hover-bg-subtle);
+}
+
+/* Таблица результатов поиска */
+#results-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-variant-numeric: tabular-nums;
+    font-size: var(--font-size-base);
+}
+
+#results-table th {
+    border-top: 1px solid var(--color-border-light);
+    border-bottom: 1px solid var(--color-border-light);
+    border-right: 1px solid var(--color-border-light);
+    border-left: none;
+    padding: var(--table-padding-vertical);
+    background: #f7f7f7;
+    position: sticky;
+    top: 0;
+    z-index: var(--z-sticky);
+}
+
+#results-table th:first-child {
+    border-left: 1px solid var(--color-border-light);
+}
+
+/* th::before из общих стилей (маскировка артефакта collapse) не нужен при separate */
+#results-table th::before {
+    display: none;
+}
+
+#results-table td {
+    border-top: none;
+    border-bottom: 1px solid var(--color-border-light);
+    border-right: 1px solid var(--color-border-light);
+    border-left: none;
+    padding: var(--table-padding-vertical);
+    vertical-align: top;
+    white-space: normal;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    word-break: break-word;
+}
+
+#results-table td:first-child {
+    border-left: 1px solid var(--color-border-light);
+}
+
+/* Индикатор загрузки результатов */
+.results-loading-indicator {
+    padding: var(--spacing-xl);
+    text-align: center;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-base);
+}
+
+/* ------------------- Основная компоновка страницы ------------------- */
+/* Обёртка: CSS Grid контейнер для адаптивного расположения панелей */
+.main-content {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(240px, 280px) 1fr;
+    grid-template-rows: 1fr;
+    grid-template-areas: "sidebar results";
+    gap: 0;
+    height: 100dvh;
+    box-sizing: border-box;
+    max-width: var(--max-content-width);
+    margin-left: auto;
+    margin-right: auto;
+    padding-top: 12px;
+    padding-left: 12px;
+    padding-right: 12px;
+}
+
+/* Левая колонка: единый прокручиваемый сайдбар (форма + футер) */
+.sidebar {
+    grid-area: sidebar;
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-gutter: stable;
+}
+
+/* Левая панель поиска: стилизация */
+.search-panel {
+    background: var(--color-bg);
+    padding: 0px 12px 16px 0px;
+    box-sizing: border-box;
+    overflow: visible;
+}
+
+/* Правая панель с результатами: занимает оставшееся пространство */
+.results-panel {
+    grid-area: results;
+    height: 100%;
+    padding: 0;
+    box-sizing: border-box;
+    overflow: hidden;
+    margin-right: 0px;
+}
+
+/* Дополнительный контейнер для скроллирования результатов */
+#results-scroll {
+    height: 100%;
+    overflow: auto;
+    padding: 0;
+    margin: 0;
+}
+
+#results {
+    max-width: 100%;
+    max-height: none;
+    overflow: visible;
+    padding-top: 5px;
+    padding-left: 0;
+}
+
+/* ------------------- Подвал под формой поиска ------------------- */
+.search-footer {
+    margin-top: 1px;
+    padding: 8px 10px;
+    background: var(--color-bg);
+    font-size: var(--font-size-sm);
+    color: #444;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+/* Количество отчетов в БД */
+.footer-reports-count {
+    font-size: var(--font-size-sm);
+    margin-bottom: 4px;
+    line-height: 1.4;
+    text-wrap: pretty;
+}
+
+.footer-reports-count strong {
+    font-variant-numeric: tabular-nums;
+}
+
+/* Информация об архиве турклуба */
+.footer-archive-info {
+    font-size: var(--font-size-sm);
+    color: #666;
+    margin-bottom: 6px;
+    line-height: 1.4;
+    text-wrap: pretty;
+}
+
+/* Кнопки авторизации и публикации в футере сайдбара */
+.footer-auth-actions {
+    display: flex;
+    gap: var(--spacing-base);
+    margin-top: 8px;
+    width: 100%;
+}
+
+.footer-publish-btn {
+    flex: 1 1 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--color-primary);
+    color: var(--color-bg-light);
+    border: none;
+    padding: var(--input-padding-vertical) 24px;
+    border-radius: var(--border-radius);
+    font-size: 15px;
+    font-weight: 500;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background var(--transition-normal), transform 0.1s;
+}
+
+.footer-publish-btn:hover {
+    background: var(--color-primary-dark);
+}
+
+.footer-publish-btn:active:not([aria-disabled="true"]) {
+    transform: translateY(1px);
+}
+
+.footer-publish-btn[aria-disabled="true"] {
+    background: var(--color-disabled);
+    cursor: not-allowed;
+    pointer-events: none;
+    opacity: 0.7;
+}
+
+.footer-publish-btn[aria-disabled="true"]:hover {
+    background: var(--color-disabled);
+}
+
+.footer-auth-btn {
+    flex: 0 0 auto;
+    padding: 0;
+    aspect-ratio: 1;
+    border: 1px solid var(--color-border);
+    border-radius: var(--border-radius);
+    background: #f9f9f9;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: border-color var(--transition-normal), transform 0.1s;
+}
+
+.footer-auth-btn:hover {
+    border-color: var(--color-primary);
+}
+
+.footer-auth-btn:active {
+    transform: translateY(1px);
+}
+
+.footer-auth-btn .auth-icon {
+    width: 22px;
+    height: 22px;
+    color: var(--color-text);
+}
+
+.footer-auth-btn .auth-icon-logout { display: none; }
+.footer-auth-btn.is-authenticated .auth-icon-login { display: none; }
+.footer-auth-btn.is-authenticated .auth-icon-logout { display: block; }
+
+/* Стили для ссылок на отчеты */
+.report-link {
+    color: var(--color-primary);
+    text-decoration: none;
+}
+
+/* Текстовые ссылки — единый hover */
+.report-link:hover,
+.file-list-inline a:hover {
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+/* Стили для URL отчета в футере */
+.report-url {
+    padding: 8px;
+    background: #f5f5f5;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    margin: 8px 0;
+    text-align: center;
+}
+
+/* Стиль для номера отчета в футере */
+.report-number {
+    color: var(--color-primary);
+    text-decoration: none;
+    font-size: 16px;
+    font-weight: 500;
+    padding: 4px 8px;
+    border-radius: var(--border-radius);
+    transition: background-color var(--transition-normal);
+}
+
+
+/* Framed, centered, fully clickable share row */
+.share-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    padding: 8px;
+    background: #f5f5f5;
+    border: 1px solid var(--color-border-light);
+    border-radius: var(--border-radius);
+    text-decoration: none;
+    color: var(--color-primary);
+    font-size: 16px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+
+.share-row .share-text {
+    pointer-events: none; /* Entire row clicks */
+}
+
+.share-row .copy-icon {
+    position: absolute;
+    right: 8px; /* Right-end icon */
+    pointer-events: none; /* Don't steal click */
+}
+
+/* The part that contains the download link text */
+.download-info {
+    flex-grow: 1; /* Allow this part to take up available space */
+    padding-right: 0;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Контейнер для форматированного отображения единственного результата */
+.single-result-formatted {
+    position: relative;
+    display: grid;
+    gap: var(--spacing-md);
+    margin-bottom: 0;
+    padding: var(--spacing-lg);
+    background: #f9f9f9;
+    border: 1px solid var(--color-border-light);
+    border-radius: var(--border-radius);
+    font-size: var(--font-size-base);
+}
+
+/* Иконки действий в правом нижнем углу единственного результата */
+.single-result-actions {
+    position: absolute;
+    right: var(--spacing-lg);
+    bottom: var(--spacing-lg);
+    display: flex;
+    gap: var(--spacing-sm);
+}
+
+/* Поле результата (только значение, название в title) */
+.single-result-field {
+    padding: 5px 0;
+    line-height: 1;
+}
+
+.single-result-field.with-tooltip {
+    cursor: help;
+}
+
+.single-result-field span {
+    display: inline-block;
+    font-weight: normal;
+}
+
+/* Поле маршрута - жирный шрифт 17px */
+.single-result-field.route-field span {
+    font-weight: bold;
+    font-size: var(--font-size-xl);
+}
+
+/* Поле комментариев - курсивный шрифт */
+.single-result-field.comments-field span {
+    font-style: italic;
+}
+
+/* ------------------- Универсальные стили для viewer'ов ------------------- */
+/* Контейнер для встроенных просмотрщиков (PDF, изображения, треки) */
+.viewer-container {
+    margin-top: var(--spacing-base);
+    margin-bottom: 0;
+    padding: 0;
+    background: #f5f5f5;
+    border: 1px solid var(--color-border-light);
+    border-radius: var(--border-radius);
+    overflow: hidden;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* Wrapper для контейнеров треков - предотвращает артефакты прокрутки */
+.track-viewers-wrapper {
+    position: relative;
+    overflow: hidden;
+}
+
+/* Скрытые контейнеры треков - загружаются за экраном для правильного масштаба nakarte.me */
+.viewer-container.track-offscreen {
+    position: absolute;
+    left: -10000px;
+    visibility: hidden;
+    pointer-events: none;
+}
+
+/* Базовый стиль для всех viewer'ов с адаптивной высотой */
+.viewer {
+    width: 100%;
+    height: var(--viewer-height);
+    min-height: var(--viewer-min-height);
+    border: none;
+    display: block;
+}
+
+/* Специфичные стили для изображений */
+.image-viewer {
+    max-width: 100%;
+    object-fit: contain;
+}
+
+/* Специфичные стили для PDF viewer (iframe) */
+.viewer-container iframe.pdf-viewer {
+    width: 100%;
+    height: 100%;
+    border: none;
+    min-height: 600px;
+}
+
+/* Индикатор загрузки для изображений */
+.viewer-container.loading {
+    position: relative;
+    background:
+        linear-gradient(45deg, rgba(0, 0, 0, 0.04) 25%, transparent 25%, transparent 75%, rgba(0, 0, 0, 0.04) 75%, rgba(0, 0, 0, 0.04)),
+        linear-gradient(45deg, rgba(0, 0, 0, 0.04) 25%, transparent 25%, transparent 75%, rgba(0, 0, 0, 0.04) 75%, rgba(0, 0, 0, 0.04));
+    background-position: 0 0, 10px 10px;
+    background-size: 20px 20px;
+}
+
+.viewer-loading-overlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: var(--z-raised);
+    pointer-events: none;
+}
+
+.viewer-container.loading .viewer-loading-overlay {
+    display: flex;
+}
+
+.viewer-loading-overlay .viewer-loading-box {
+    background: rgba(255, 255, 255, 0.95);
+    padding: 10px 18px;
+    border-radius: var(--border-radius);
+    box-shadow: 0 2px 8px rgba(var(--shadow-color), 0.15);
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+    max-width: min(90%, 700px);
+}
+
+.viewer-loading-overlay .viewer-loading-label {
+    font-size: 16px;
+    color: #555;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.viewer-loading-overlay .viewer-loading-filename {
+    font-size: 16px;
+    color: #333;
+    font-weight: 600;
+    min-width: 0;
+    max-width: min(70vw, 520px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.viewer-loading-overlay .viewer-loading-dots::after {
+    content: '...';
+    display: inline-block;
+    width: 3ch;
+    text-align: left;
+    font-size: 16px;
+    color: #555;
+    font-weight: 500;
+    animation: imageLoadingDots 1.5s infinite;
+}
+
+@keyframes imageLoadingDots {
+    0%, 20% {
+        content: '\00a0\00a0\00a0';
+    }
+    40% {
+        content: '.\00a0\00a0';
+    }
+    60% {
+        content: '..\00a0';
+    }
+    80%, 100% {
+        content: '...';
+    }
+}
+
+/* Затемнение изображения во время загрузки */
+.viewer-container.loading .image-viewer {
+    opacity: 1;
+    pointer-events: none;
+}
+
+/* Активная ссылка в табе (выделяется цветом и подчёркиванием) */
+.tab-link.active {
+    color: var(--color-accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+/* Иконки внешних ссылок и скачивания треков */
+.external-link-icon,
+.track-download-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: middle;
+    color: inherit;
+    text-decoration: none;
+    cursor: pointer;
+    transition: color var(--transition-normal), transform 0.1s;
+}
+
+/* Wrapper для контейнеров изображений (multi-container архитектура) */
+.image-viewers-wrapper {
+    display: block;
+}
+
+
+/* Wrapper для контейнеров треков (multi-container архитектура) */
+.track-viewers-wrapper {
+    display: block;
+}
+
+.image-show-link {
+    display: inline-flex;
+    align-items: center;
+    vertical-align: middle;
+    color: var(--color-primary);
+    cursor: pointer;
+    transition: color var(--transition-normal), transform 0.1s;
+}
+
+/* Контейнер табов */
+.tabs-container {
+    position: relative;
+    margin-top: 1px;
+    margin-bottom: 8px;
+}
+
+/* Заголовки табов */
+.tabs-header {
+    display: flex;
+    gap: var(--spacing-xs);
+    border-bottom: 2px solid var(--color-border-light);
+    background: #f5f5f5;
+}
+
+/* Кнопка таба */
+.tab-button {
+    padding: 5px var(--spacing-xl);
+    background: #e0e0e0;
+    border: none;
+    border-top-left-radius: 4px;
+    border-top-right-radius: 4px;
+    cursor: pointer;
+    font-size: var(--font-size-base);
+    font-weight: 500;
+    color: #555;
+    transition: background var(--transition-normal), color var(--transition-normal), transform 0.1s;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.tab-button:active {
+    transform: translateY(1px);
+}
+
+
+.tab-button.active {
+    background: var(--color-bg-light);
+    color: var(--color-primary);
+    font-weight: 600;
+    border-bottom: 2px solid var(--color-bg-light);
+    margin-bottom: -2px;
+}
+
+/* Спиннер загрузки на табах */
+.tab-spinner {
+    display: none;
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--color-border-light);
+    border-top-color: var(--color-primary);
+    border-radius: 50%;
+    animation: tab-spin 0.8s linear infinite;
+}
+
+.tab-button.loading .tab-spinner {
+    display: inline-block;
+}
+
+@keyframes tab-spin {
+    to { transform: rotate(360deg); }
+}
+
+/* Содержимое таба */
+.tab-content {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    padding: 4px 8px 8px 8px;
+    background: var(--color-bg-light);
+    border: 1px solid var(--color-border-light);
+    border-top: none;
+    border-bottom-left-radius: 4px;
+    border-bottom-right-radius: 4px;
+    min-height: 60px;
+}
+
+.tab-content.active {
+    position: relative;
+    top: auto;
+    left: auto;
+    width: auto;
+    visibility: visible;
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* Список файлов в строку через точку с запятой */
+.file-list-inline {
+    line-height: 1.8;
+    word-wrap: break-word;
+}
+
+.file-list-inline a {
+    color: var(--color-primary);
+    text-decoration: none;
+    margin-right: 4px;
+}
+
+/* ------------------- Иконки действий в столбце Шифр-ДопШифр ------------------- */
+/* Контейнер ячейки с шифром */
+.shifr-cell-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Контейнер иконок действий */
+.shifr-actions {
+    display: flex;
+    flex-direction: row;
+    gap: var(--spacing-sm);
+}
+
+/* Стиль иконки действия */
+.shifr-action-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-primary);
+    text-decoration: none;
+    cursor: pointer;
+    transition: color var(--transition-normal), transform 0.1s;
+}
+
+/* Иконки действий — единый hover */
+.shifr-action-icon:hover,
+.image-show-link:hover,
+.track-download-icon:hover,
+.tab-open-report-link:hover,
+.external-link-icon:hover {
+    color: var(--color-accent);
+    transform: scale(var(--hover-scale-icon));
+}
+
+.shifr-action-icon svg {
+    display: block;
+}
+
+.shifr-action-icon.disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+/* Плейсхолдер для отсутствующего файла отчета */
+.file-not-available-placeholder {
+    padding: 20px;
+    text-align: center;
+    color: var(--color-text-muted);
+    font-style: italic;
+}
+
+/* =============== АДАПТИВНОСТЬ =============== */
+
+/* Десктоп: сворачивание панели */
+@media (min-width: 901px) {
+    /*
+      Панель имеет padding-right: 12px, из-за этого абсолютное позиционирование кнопок
+      внутри .search-header визуально отталкивается от внутреннего края, а не от границы панели.
+      Растягиваем .search-header до правого края панели, сохраняя исходный контентный layout.
+    */
+    .search-header {
+        margin-right: -12px;
+        padding-right: 12px;
+    }
+
+    /* ===== Управление боковой панелью — hover с изменением прозрачности ===== */
+    
+    /* Показываем кнопку сворачивания только при наведении на верхнюю область (над формой) */
+    .search-header:hover .sidebar-collapse-btn {
+        opacity: 1;
+        visibility: visible;
+    }
+
+    /* В развернутом состоянии кнопка разворачивания не нужна */
+    .main-content:not(.sidebar-collapsed) .sidebar-expand-btn {
+        display: none;
+    }
+
+    /* В свернутом состоянии показываем кнопку разворачивания при наведении */
+    .sidebar-collapsed .search-panel:hover .sidebar-expand-btn {
+        opacity: 1;
+        visibility: visible;
+    }
+    
+    /* Плавная анимация изменения ширины колонок */
+    .main-content {
+        transition: grid-template-columns 0.3s ease;
+    }
+    
+    /* Состояние "свернуто" - узкая колонка под размер логотипа */
+    .main-content.sidebar-collapsed {
+        grid-template-columns: var(--sidebar-collapsed-width) 1fr;
+    }
+
+    /* В свернутом состоянии gutter скроллбара не нужен — колонка узкая */
+    .sidebar-collapsed .sidebar {
+        overflow: hidden;
+        scrollbar-gutter: auto;
+    }
+    
+    /* Скрываем все содержимое кроме логотипа */
+    .sidebar-collapsed .search-panel form,
+    .sidebar-collapsed .search-header .header-title-link,
+    .sidebar-collapsed .search-footer,
+    .sidebar-collapsed .sidebar-collapse-btn {
+        display: none;
+    }
+    
+    /* Выравниваем кнопку с логотипом по левому краю */
+    .sidebar-collapsed .search-header {
+        justify-content: flex-start;
+    }
+    
+    /* В свернутом состоянии логотип становится кликабельным */
+    .sidebar-collapsed .sidebar-toggle-btn {
+        cursor: pointer;
+    }
+    
+    .sidebar-collapsed .sidebar-toggle-btn:hover .header-logo {
+        opacity: 0.8;
+    }
+    
+    /* Задержка появления контента при разворачивании */
+    /* Контент появляется с задержкой после расширения панели */
+    .main-content:not(.sidebar-collapsed) .search-panel form,
+    .main-content:not(.sidebar-collapsed) .search-header .header-title-link,
+    .main-content:not(.sidebar-collapsed) .search-footer {
+        animation: fadeInContent 0.2s ease 0.25s both;
+    }
+    
+    @keyframes fadeInContent {
+        from {
+            opacity: 0;
+        }
+        to {
+            opacity: 1;
+        }
+    }
+}
+
+/* Планшеты */
+@media (max-width: 900px) {
+    /* На планшетах и мобильных разрешаем естественный скролл страницы */
+    body:has(.main-content) {
+        overflow: auto;
+        height: auto;
+    }
+    
+    /* По умолчанию (нет результатов) - футер сразу после формы */
+    .main-content {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto auto 1fr;
+        grid-template-areas:
+            "panel"
+            "footer"
+            "results";
+        height: auto;
+        min-height: 100dvh;
+    }
+    
+    /* Когда есть реальные результаты - футер внизу */
+    .main-content:has(#results table),
+    .main-content:has(#results .tabs-container) {
+        grid-template-rows: auto 1fr auto;
+        grid-template-areas:
+            "panel"
+            "results"
+            "footer";
+    }
+    
+    /* Обёртка прозрачна для grid — дети участвуют напрямую */
+    .sidebar {
+        display: contents;
+    }
+
+    /* Возвращаем grid-area детям (на десктопе они сняты) */
+    .search-panel {
+        grid-area: panel;
+        padding-right: 0;
+    }
+
+    /* Footer на всю ширину */
+    .search-footer {
+        grid-area: footer;
+        margin-right: 0;
+    }
+    
+    /* Ограничиваем ширину панели результатов */
+    .results-panel {
+        max-width: 100%;
+        overflow: visible; /* mobile: avoid nested scrolling; let page scroll */
+    }
+    
+    /* Контейнер результатов: на мобиле НЕ делаем отдельный scroll-контейнер (иначе вложенный скролл) */
+    #results-scroll {
+        overflow: visible;
+        max-width: 100%;
+        height: auto;
+    }
+    
+    /* Скрываем кнопку сворачивания на мобильных */
+    .sidebar-collapse-btn {
+        display: none;
+    }
+}
+
+/* Мобильные */
+@media (max-width: 600px) {
+    /* Уменьшение внутренних отступов формы и размера шрифта для подписей */
+    form { 
+        padding: 8px; 
+        gap: 4px; 
+    }
+    
+    label { 
+        font-size: var(--font-size-sm); 
+    }
+    
+    /* Иконки действий в потоке для предотвращения перекрытия с текстом */
+    .single-result-actions {
+        position: static;
+        justify-content: flex-end;
+        margin-top: var(--spacing-md);
+        margin-right: var(--spacing-md);
+    }
+
+    .tab-button {
+        padding: 5px 5px;
+    }
+}
+
+/* ------------------- Plain viewer mode (only for arrow links) ------------------- */
+html.plain-mode,
+html.plain-mode body {
+    background: #fff;
+}
+
+html.plain-mode body {
+    overflow: hidden; /* fullscreen viewer, no page scroll */
+}
+
+html.plain-mode .search-panel,
+html.plain-mode .search-footer,
+html.plain-mode .sidebar {
+    display: none !important;
+}
+
+html.plain-mode .main-content {
+    grid-template-columns: 1fr !important;
+    grid-template-rows: 1fr !important;
+    grid-template-areas: "results" !important;
+    max-width: none;
+    margin: 0;
+    padding-left: 0;
+    padding-right: 0;
+    min-height: 100dvh;
+}
+
+/* Hide tab controls + file list. Keep only the active viewer. */
+html.plain-mode .tabs-header,
+html.plain-mode .file-list-inline {
+    display: none !important;
+}
+
+/* The active tab becomes a fullscreen canvas */
+html.plain-mode .tab-content.active {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100dvh;
+    padding: 0;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    overflow: hidden;
+    background: #fff;
+    z-index: var(--z-fullscreen);
+}
+
+html.plain-mode .tab-content.active .viewer-container {
+    position: absolute;
+    inset: 0;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    background: #fff;
+}
+
+html.plain-mode .tab-content.active .viewer {
+    width: 100%;
+    height: 100%;
+    min-height: 100%;
+    border: none;
+}
+
+/* =============================================================================
+   EAGER CACHING V2: VIEWER LOADING STATES
+   ============================================================================= */
+
+/* Placeholder для состояния подготовки кеша (preparing) */
+.viewer-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 300px;
+    padding: 40px 20px;
+    background: #f9f9f9;
+    border: 1px solid #e0e0e0;
+    border-radius: var(--border-radius-lg);
+    gap: 16px;
+    text-align: center;
+}
+
+.viewer-loading .spinner {
+    width: 40px;
+    height: 40px;
+    border: 4px solid rgba(0, 0, 0, 0.1);
+    border-top-color: var(--color-primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+.viewer-loading .loading-message {
+    font-size: 16px;
+    color: #333;
+    font-weight: 500;
+}
+
+.viewer-loading .loading-detail {
+    font-size: 14px;
+    color: #666;
+    margin-top: 4px;
+}
+
+.viewer-loading .loading-dots::after {
+    content: '';
+    animation: loadingDots 1.5s infinite;
+}
+
+/* Track loading placeholder (начальное состояние, трансформируется в .viewer-loading) */
+.track-loading-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 300px;
+    padding: 40px 20px;
+    background: #f9f9f9;
+    border: 1px solid #e0e0e0;
+    border-radius: var(--border-radius-lg);
+    gap: 16px;
+    text-align: center;
+}
+
+.track-loading-placeholder .spinner {
+    width: 40px;
+    height: 40px;
+    border: 4px solid rgba(0, 0, 0, 0.1);
+    border-top-color: var(--color-primary);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+/* Placeholder для ошибок */
+.viewer-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 300px;
+    padding: 40px 20px;
+    background: #fff8f8;
+    border: 1px solid #ffdddd;
+    border-radius: var(--border-radius-lg);
+    gap: 16px;
+    text-align: center;
+}
+
+.viewer-error .error-icon {
+    font-size: 48px;
+    color: var(--color-accent);
+}
+
+.viewer-error span {
+    font-size: 16px;
+    color: #333;
+}
+
+.viewer-error a {
+    color: var(--color-primary);
+    text-decoration: underline;
+}
+
+.viewer-error a:hover {
+    color: var(--color-primary-dark);
+}
+
+/* Блок ошибки инициализации приложения с кнопкой повтора */
+.app-init-error {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+    padding: 40px 20px;
+    gap: 16px;
+    text-align: center;
+}
+
+.app-init-error .error-message {
+    font-size: 16px;
+    color: #555;
+}
+
+.app-init-error .retry-btn {
+    background: var(--color-primary);
+    color: white;
+    border: none;
+    padding: 10px 24px;
+    border-radius: var(--border-radius);
+    font-size: 15px;
+    cursor: pointer;
+    transition: background var(--transition-normal), transform 0.1s;
+}
+
+.app-init-error .retry-btn:hover {
+    background: var(--color-primary-dark);
+}
+
+.app-init-error .retry-btn:active {
+    transform: translateY(1px);
+}
+
+/* Анимация spinner */
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Dropdown меню выхода (logoutMenu.js) */
+.logout-dropdown {
+    background: #fff;
+    border: 1px solid #d0d0d0;
+    border-radius: var(--border-radius-lg);
+    box-shadow: 0 4px 14px rgba(var(--shadow-color), 0.12);
+    padding: 4px 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.logout-dropdown-item {
+    background: none;
+    border: none;
+    padding: 9px 16px;
+    font-size: 13px;
+    color: #333;
+    cursor: pointer;
+    text-align: left;
+    white-space: nowrap;
+    transition: background 0.12s;
+}
+
+.logout-dropdown-item:hover {
+    background: #f0f0f0;
+}

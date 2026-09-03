@@ -1,0 +1,6 @@
+# Test dependencies for TlibWebApp API tests
+# Install: pip install -r tests/requirements-test.txt
+# Run:     BASE_URL=https://your-server.example.com python -m pytest tests/api -v
+
+pytest>=8.0
+httpx>=0.27

@@ -1,0 +1,278 @@
+<!--
+  Version 1.1 - 10.06.2026
+
+  Страница авторизации TlibWebApp (Magic Link + код).
+  Тестовая страница: сайт остаётся полностью открытым.
+  Два состояния управляются js/login.js:
+    - Форма входа (не авторизован): email/имя → после отправки → поле кода
+    - "Вы авторизованы" (авторизован)
+  Стили inline. Скрипт внешний (js/login.js) — CSP запрещает inline-скрипты.
+-->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Вход · tLib</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    background: #f5f5f5;
+    color: #222;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  header {
+    background: #fff;
+    border-bottom: 1px solid #ddd;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+  }
+
+  header h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: #333;
+  }
+
+  main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 16px;
+  }
+
+  .card {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 32px 28px;
+    width: 100%;
+    max-width: 400px;
+  }
+
+  .card-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: #222;
+    margin-bottom: 6px;
+  }
+
+  .card-subtitle {
+    font-size: 13px;
+    color: #666;
+    margin-bottom: 24px;
+  }
+
+  .form-group {
+    margin-bottom: 16px;
+  }
+
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: #444;
+    margin-bottom: 5px;
+  }
+
+  input[type="email"],
+  input[type="text"] {
+    width: 100%;
+    padding: 8px 10px;
+    font-size: 14px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    outline: none;
+    color: #222;
+    background: #fff;
+    transition: border-color 0.15s;
+  }
+
+  input[type="email"]:focus,
+  input[type="text"]:focus {
+    border-color: #2563eb;
+  }
+
+  .btn {
+    width: 100%;
+    padding: 9px 16px;
+    font-size: 14px;
+    font-weight: 500;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.15s;
+    margin-top: 8px;
+  }
+
+  .btn-primary {
+    background: #2563eb;
+    color: #fff;
+  }
+
+  .btn-primary:hover { background: #1d4ed8; }
+  .btn-primary:disabled { background: #93c5fd; cursor: not-allowed; }
+
+  .btn-secondary {
+    background: #fff;
+    color: #444;
+    border: 1px solid #ccc;
+  }
+
+  .btn-secondary:hover { background: #f5f5f5; }
+
+  .message {
+    margin-top: 16px;
+    padding: 10px 12px;
+    border-radius: 4px;
+    font-size: 13px;
+    display: none;
+  }
+
+  .message.success {
+    background: #f0fdf4;
+    border: 1px solid #86efac;
+    color: #166534;
+  }
+
+  .message.error {
+    background: #fef2f2;
+    border: 1px solid #fca5a5;
+    color: #991b1b;
+  }
+
+  .message.warn {
+    background: #fffbeb;
+    border: 1px solid #fcd34d;
+    color: #92400e;
+  }
+
+  /* Состояние "авторизован" */
+  .auth-info {
+    margin-bottom: 20px;
+  }
+
+  .auth-info .name {
+    font-size: 18px;
+    font-weight: 600;
+    color: #222;
+    margin-bottom: 4px;
+  }
+
+  .auth-info .email {
+    font-size: 13px;
+    color: #666;
+  }
+
+  .auth-info .role-badge {
+    display: inline-block;
+    margin-top: 6px;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 500;
+    border-radius: 10px;
+    background: #dbeafe;
+    color: #1e40af;
+  }
+
+  .divider {
+    height: 1px;
+    background: #eee;
+    margin: 20px 0;
+  }
+
+  /* Два состояния управляются JS */
+  #stateLogin     { display: none; }
+  #stateAuth      { display: none; }
+  #stateLoading   { display: block; }
+
+  .loading-text {
+    text-align: center;
+    color: #888;
+    font-size: 13px;
+    padding: 12px 0;
+  }
+  /* Dropdown выхода (logoutMenu.js) */
+  .logout-dropdown { background:#fff; border:1px solid #d0d0d0; border-radius:6px; box-shadow:0 4px 14px rgba(0,0,0,.12); padding:4px 0; display:flex; flex-direction:column; }
+  .logout-dropdown-item { background:none; border:none; padding:9px 16px; font-size:13px; color:#333; cursor:pointer; text-align:left; white-space:nowrap; }
+  .logout-dropdown-item:hover { background:#f0f0f0; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>tLib · Вход</h1>
+</header>
+
+<main>
+  <div class="card">
+
+    <!-- Состояние: загрузка -->
+    <div id="stateLoading">
+      <p class="loading-text">Проверка авторизации…</p>
+    </div>
+
+    <!-- Состояние: не авторизован -->
+    <div id="stateLogin">
+      <p class="card-title">Войти в tLib</p>
+      <p id="loginSubtitle" class="card-subtitle">Введите email — мы пришлём ссылку и код для входа</p>
+
+      <form id="loginForm" novalidate>
+        <div id="emailGroup">
+          <div class="form-group">
+            <label for="emailInput">Email</label>
+            <input type="email" id="emailInput" name="email"
+                   placeholder="you@example.com" autocomplete="email" required>
+          </div>
+          <div class="form-group">
+            <label for="nameInput">Имя <span style="color:#999;font-weight:400">(необязательно)</span></label>
+            <input type="text" id="nameInput" name="name"
+                   placeholder="Как вас зовут?" autocomplete="name" maxlength="100">
+          </div>
+          <button type="submit" class="btn btn-primary" id="submitBtn">Получить ссылку</button>
+        </div>
+
+        <div id="codeGroup" style="display:none">
+          <div class="form-group">
+            <label for="codeInput">Введите код из письма</label>
+            <input type="text" id="codeInput" name="code"
+                   placeholder="000000" inputmode="numeric" maxlength="6"
+                   autocomplete="one-time-code">
+          </div>
+          <button type="button" class="btn btn-primary" id="verifyBtn">Войти</button>
+          <button type="button" class="btn btn-secondary" id="resendBtn" style="margin-top:8px">Запросить новый код</button>
+        </div>
+      </form>
+
+      <div class="message" id="formMessage"></div>
+    </div>
+
+    <!-- Состояние: авторизован -->
+    <div id="stateAuth">
+      <p class="card-title">Вы авторизованы</p>
+      <div class="divider"></div>
+      <div class="auth-info">
+        <div class="name" id="userName"></div>
+        <div class="email" id="userEmail"></div>
+        <div id="userRoleWrap" style="display:none">
+          <span class="role-badge" id="userRole"></span>
+        </div>
+      </div>
+      <button class="btn btn-secondary" id="logoutBtn">Выйти</button>
+    </div>
+
+  </div>
+</main>
+
+<script src="/js/login.js" type="module"></script>
+</body>
+</html>

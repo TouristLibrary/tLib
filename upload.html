@@ -1,0 +1,807 @@
+<!--
+  Version 2.6 - 10.07.2026
+
+  Страница загрузки отчётов TlibWebApp.
+  Аутентификация: Magic Link + цифровой код (cookie session_token).
+  Неавторизованные видят только хедер с формой входа и приглашением.
+  Авторизованные видят форму загрузки отчёта.
+  Администраторы дополнительно видят таблицу отчётов на рассмотрении (data.up/10_up)
+  и раздел «Скрытые отчёты» (список Шифр-ДопШифр, которые не кешируются и не
+  показываются на странице отчёта, но остаются в результатах поиска).
+  Форма работает в трёх режимах: «new» (загрузка), «edit» (модерация 10_up),
+  «edit_published» (правка опубликованного отчёта из библиотеки).
+  v2.2: блок #replace-notice — предупреждение о замене старого отчёта при смене шифра.
+  v2.4: раздел #my-reports-section — сворачиваемый (по умолчанию свёрнут) список
+        опубликованных отчётов текущего пользователя с кнопкой «Редактировать».
+  v2.5: треугольник сворачивания «Мои отчёты» увеличен до размера текста заголовка
+        (font-size 13px, символ ▶ вместо мелкого ▸).
+  v2.6: раздел #hidden-reports-section — «Скрытые отчёты» (textarea + кнопка «Сохранить»,
+        активна только при изменении текста), сразу после «Отчёты на рассмотрении».
+  Стили inline, скрипт внешний (js/upload.js), т.к. CSP запрещает inline-скрипты.
+-->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Загрузка отчёта · tLib</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    background: #f5f5f5;
+    color: #222;
+    min-height: 100vh;
+  }
+
+  header {
+    background: #fff;
+    border-bottom: 1px solid #ddd;
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .header-left { display: flex; align-items: center; gap: 14px; }
+
+  .header-title { font-size: 15px; font-weight: 600; color: #333; }
+
+  .header-right { display: flex; align-items: center; gap: 14px; }
+
+  @media (max-width: 600px) {
+    header { padding: 10px 16px; }
+    .header-left, .header-right { width: 100%; justify-content: space-between; }
+  }
+
+  /* Auth form in header */
+  #auth-form { display: flex; align-items: center; gap: 8px; }
+
+  #auth-form input[type="email"],
+  #auth-form input[type="text"] {
+    padding: 5px 10px;
+    font-size: 13px;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    width: 220px;
+    outline: none;
+    color: #222;
+  }
+
+  #auth-form input[type="email"]:focus,
+  #auth-form input[type="text"]:focus { border-color: #888; }
+
+  #auth-form button {
+    padding: 5px 14px;
+    font-size: 13px;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+    color: #333;
+    white-space: nowrap;
+  }
+
+  #auth-form button:hover { background: #f0f0f0; }
+  #auth-form button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  #auth-msg { font-size: 12px; color: #555; white-space: nowrap; min-width: 180px; text-align: right; }
+
+  #auth-info { display: none; align-items: center; gap: 12px; }
+  #auth-email { font-size: 13px; color: #555; }
+
+  #logoutBtn {
+    padding: 5px 14px; font-size: 13px; border: 1px solid #bbb;
+    border-radius: 4px; background: #fff; cursor: pointer; color: #333;
+  }
+  #logoutBtn:hover { background: #f0f0f0; }
+
+  /* Main layout */
+  main { max-width: 780px; margin: 20px auto; padding: 0 16px 60px; display: grid; gap: 16px; }
+
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; }
+
+  .card-header {
+    padding: 10px 16px;
+    background: #fafafa;
+    border-bottom: 1px solid #e8e8e8;
+    font-weight: 600;
+    font-size: 13px;
+    color: #444;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  #form-title { font-weight: 600; font-size: 13px; color: #444; }
+
+  .card-body { padding: 16px; }
+
+  /* Login prompt */
+  #login-prompt { display: none; padding: 40px 16px; text-align: center; color: #666; font-size: 14px; }
+
+  /* Sections visibility */
+  #report-section { display: none; }
+  #admin-section  { display: none; }
+  #hidden-reports-section { display: none; }
+  #my-reports-section { display: none; }
+
+  /* Раздел «Скрытые отчёты» */
+  #hidden-reports-section textarea {
+    width: 100%; min-height: 70px; padding: 6px 8px; font-size: 13px;
+    border: 1px solid #ccc; border-radius: 4px; font-family: inherit;
+    resize: vertical; outline: none; transition: border-color 0.15s;
+  }
+  #hidden-reports-section textarea:focus { border-color: #2563eb; }
+
+  /* Раздел «Мои отчёты» — сворачиваемый заголовок */
+  .card-header.collapsible { cursor: pointer; user-select: none; }
+  .card-header.collapsible:hover { background: #f2f2f2; }
+  .my-reports-count { font-weight: 400; color: #888; font-size: 12px; margin-left: 6px; }
+  .collapse-arrow { font-size: 13px; line-height: 1; color: #888; display: inline-block; transition: transform 0.15s; }
+  .collapse-arrow.expanded { transform: rotate(90deg); }
+
+  .my-reports-edit-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px 3px 7px;
+    font-size: 12px;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    background: #fff;
+    color: #333;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .my-reports-edit-btn:hover { background: #f0f0f0; }
+
+  /* Баннер блокировки загрузок при нехватке места на диске */
+  .upload-disk-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    background: #fff8e1;
+    border: 1px solid #ffc107;
+    border-left: 4px solid #f59e0b;
+    border-radius: 6px;
+    padding: 14px 16px;
+    font-size: 14px;
+    color: #78350f;
+    margin-bottom: 20px;
+  }
+  .upload-disk-banner-icon { font-size: 20px; flex-shrink: 0; line-height: 1.4; }
+
+  /* Form table */
+  .form-table { width: 100%; border-collapse: collapse; }
+
+  .form-table tr td { padding: 5px 6px; vertical-align: middle; }
+
+  .form-table tr td:first-child {
+    width: 180px; font-size: 13px; color: #555; white-space: nowrap; padding-right: 12px;
+  }
+
+  .form-table input[type="text"],
+  .form-table input[type="number"],
+  .form-table select,
+  .form-table textarea {
+    width: 100%; padding: 5px 8px; font-size: 13px; border: 1px solid #ccc;
+    border-radius: 4px; color: #222; background: #fff; outline: none;
+    font-family: inherit; transition: border-color 0.15s;
+  }
+
+  .form-table input:focus,
+  .form-table select:focus,
+  .form-table textarea:focus { border-color: #2563eb; }
+
+  .form-table textarea { resize: vertical; min-height: 72px; }
+
+  /* Code row */
+  .code-row { display: flex; align-items: center; gap: 4px; }
+  .code-row input[type="number"] { width: 80px; }
+  .code-row .code-sep { font-size: 15px; color: #888; padding: 0 2px; }
+  .code-row input[type="text"].dopshifr-input { width: 80px; text-transform: uppercase; }
+  .code-row .code-hint { font-size: 11px; color: #aaa; margin-left: 6px; }
+
+  /* Edit-report button (pencil icon, inline in code row) */
+  #edit-report-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 10px 3px 7px;
+    font-size: 12px;
+    border: 1px solid #bbb;
+    border-radius: 4px;
+    background: #fff;
+    color: #333;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 0.12s;
+  }
+  #edit-report-btn:hover { background: #f0f0f0; }
+  #edit-report-btn svg { flex-shrink: 0; }
+  #edit-report-btn.disabled {
+    opacity: 0.55;
+    color: #999;
+    border-color: #ddd;
+    background: #f5f5f5;
+    cursor: not-allowed;
+  }
+  #edit-report-btn.disabled:hover { background: #f5f5f5; }
+
+  input.error, select.error, textarea.error { border-color: #e53e3e !important; }
+  .field-error { font-size: 11px; color: #e53e3e; margin-top: 2px; }
+
+  /* Month row */
+  .month-row { display: flex; align-items: center; gap: 8px; }
+  .month-row select { width: auto; min-width: 100px; }
+  .month-row span { font-size: 13px; color: #666; }
+
+  .req { color: #e53e3e; margin-left: 1px; }
+
+  /* File widget */
+  .file-widget { display: flex; flex-direction: column; gap: 6px; }
+
+  #file-current {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    background: #f8faff;
+    border: 1px solid #c7d7f8;
+    border-radius: 4px;
+    font-size: 13px;
+    color: #333;
+  }
+
+  #file-current-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  #file-current .dl-icon { flex-shrink: 0; }
+
+  #file-current-delete {
+    padding: 2px 8px;
+    font-size: 12px;
+    border: 1px solid #fca5a5;
+    border-radius: 3px;
+    background: #fff5f5;
+    color: #9b1c1c;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  #file-current-delete:hover { background: #fee2e2; }
+
+  #file-pick { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  #file-pick input[type="file"] { font-size: 13px; }
+
+  #file-pick-clear {
+    display: none;
+    padding: 2px 8px;
+    font-size: 12px;
+    border: 1px solid #bbb;
+    border-radius: 3px;
+    background: #fff;
+    color: #555;
+    cursor: pointer;
+  }
+  #file-pick-clear:hover { background: #f0f0f0; }
+
+  .file-info { font-size: 12px; color: #888; }
+
+  /* Admin comment block */
+  #admin-comment-wrap { display: none; margin-top: 14px; }
+
+  /* Uploader info block (admin-only) */
+  #uploader-info-wrap { display: none; margin-top: 14px; }
+  #uploader-info-wrap .ui-label { font-size: 13px; color: #555; margin-bottom: 6px; }
+  #uploader-info-wrap .ui-fields { display: flex; gap: 10px; flex-wrap: wrap; }
+  #uploader-info-wrap .ui-fields input { flex: 1; min-width: 160px; padding: 5px 8px; font-size: 13px;
+    border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #222; }
+  #uploader-info-wrap .ui-fields input[readonly] { background: #f5f5f5; color: #555; }
+
+  /* Delete reason block */
+  #delete-reason-wrap { display: none; margin-top: 14px; }
+  #delete-reason-wrap .dr-label { font-size: 13px; color: #991b1b; font-weight: 600; margin-bottom: 4px; }
+  #delete-reason-wrap textarea { width: 100%; padding: 6px 8px; font-size: 13px;
+    border: 1px solid #fca5a5; border-radius: 4px; background: #fff5f5; color: #555;
+    font-family: inherit; resize: vertical; outline: none; }
+
+
+  #admin-comment-wrap .ac-label { font-size: 13px; color: #555; margin-bottom: 4px; }
+
+  #admin-comment-wrap textarea {
+    width: 100%; min-height: 60px; padding: 6px 8px; font-size: 13px;
+    border: 1px solid #ccc; border-radius: 4px; font-family: inherit;
+    resize: vertical; outline: none; transition: border-color 0.15s;
+  }
+  #admin-comment-wrap textarea:focus { border-color: #2563eb; }
+
+  /* Buttons */
+  .btn-row { margin-top: 18px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+  #upload-progress {
+    margin-top: 12px;
+    display: none;
+  }
+
+  .progress-track {
+    height: 8px;
+    background: #e5e7eb;
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: #2563eb;
+    border-radius: 4px;
+    transition: width 0.15s ease;
+  }
+
+  .progress-text {
+    margin-top: 5px;
+    font-size: 12px;
+    color: #6b7280;
+  }
+
+  .btn {
+    padding: 7px 20px; font-size: 13px; border-radius: 4px; border: 1px solid #bbb;
+    cursor: pointer; background: #fff; color: #333; transition: background 0.15s;
+  }
+  .btn:hover:not(:disabled) { background: #f0f0f0; }
+
+  .btn-primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+  .btn-primary:hover:not(:disabled) { background: #1d4ed8; border-color: #1d4ed8; }
+  .btn-primary:disabled { background: #ccc; border-color: #ccc; color: #888; cursor: not-allowed; }
+
+  .btn-danger { background: #fff5f5; color: #9b1c1c; border-color: #fca5a5; }
+  .btn-danger:hover:not(:disabled) { background: #fee2e2; }
+  .btn-danger:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Notifications */
+  .notice { padding: 10px 14px; border-radius: 4px; font-size: 13px; margin-top: 12px; display: none; }
+  .notice.success { background: #f0fdf4; border: 1px solid #86efac; color: #166534; }
+  .notice.error   { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b; }
+  .notice.info    { background: #eff6ff; border: 1px solid #93c5fd; color: #1e3a8a; }
+  .notice.warning { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+
+  th {
+    text-align: left; padding: 6px 8px; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.03em; color: #888; border-bottom: 1px solid #e8e8e8;
+  }
+
+  td { padding: 6px 8px; border-bottom: 1px solid #f0f0f0; color: #333; vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #fafafa; }
+
+  .td-id   { font-family: monospace; font-size: 12px; color: #555; white-space: nowrap; }
+  .td-route{ max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .td-date { font-size: 12px; color: #888; white-space: nowrap; }
+
+  .dl-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; color: #2563eb; text-decoration: none;
+    cursor: pointer; border-radius: 4px; transition: color 0.12s, transform 0.1s;
+  }
+  .dl-icon svg { display: block; }
+  .dl-icon:hover { transform: scale(1.15); }
+
+  .row-link { cursor: pointer; }
+  .row-link:hover td { background: #eff6ff; }
+  .row-link.active-row td { background: #dbeafe; }
+
+  .empty-msg { padding: 20px; text-align: center; color: #aaa; font-size: 13px; }
+  .state-loading { color: #888; padding: 20px; text-align: center; font-size: 13px; }
+
+  /* Badges in staged table */
+  .badge {
+    display: inline-block;
+    padding: 1px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    vertical-align: middle;
+    margin-left: 4px;
+  }
+  .badge-edit  { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+  .badge-delete { background: #fef2f2; color: #991b1b; border: 1px solid #fca5a5; }
+
+  /* Delete confirmation dialog */
+  #delete-confirm-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.35);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  #delete-confirm-overlay.visible { display: flex; }
+
+  #delete-confirm-dialog {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 24px;
+    max-width: 420px;
+    width: 90%;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  }
+  #delete-confirm-dialog h3 { font-size: 14px; font-weight: 600; color: #991b1b; margin-bottom: 10px; }
+  #delete-confirm-dialog p  { font-size: 13px; color: #444; margin-bottom: 14px; line-height: 1.5; }
+  #delete-confirm-input {
+    width: 100%; padding: 6px 8px; font-size: 13px;
+    border: 1px solid #ccc; border-radius: 4px; outline: none;
+    margin-bottom: 6px; font-family: inherit;
+    text-transform: uppercase;
+  }
+  #delete-confirm-input:focus { border-color: #e53e3e; }
+  #delete-confirm-input.error { border-color: #e53e3e; }
+  #delete-confirm-reason-label { font-size: 13px; color: #444; margin: 10px 0 4px; }
+  #delete-confirm-reason {
+    width: 100%; min-height: 60px; padding: 6px 8px; font-size: 13px;
+    border: 1px solid #ccc; border-radius: 4px; outline: none; resize: vertical;
+    font-family: inherit; margin-bottom: 6px;
+  }
+  #delete-confirm-reason:focus { border-color: #e53e3e; }
+  #delete-confirm-reason.error { border-color: #e53e3e; }
+  #delete-confirm-err { font-size: 11px; color: #e53e3e; min-height: 16px; margin-bottom: 14px; }
+  #delete-confirm-btns { display: flex; gap: 8px; justify-content: flex-end; }
+  /* Dropdown выхода (logoutMenu.js) */
+  .logout-dropdown { background:#fff; border:1px solid #d0d0d0; border-radius:6px; box-shadow:0 4px 14px rgba(0,0,0,.12); padding:4px 0; display:flex; flex-direction:column; }
+  .logout-dropdown-item { background:none; border:none; padding:9px 16px; font-size:13px; color:#333; cursor:pointer; text-align:left; white-space:nowrap; }
+  .logout-dropdown-item:hover { background:#f0f0f0; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <span class="header-title">tLib · Загрузка отчёта</span>
+  </div>
+  <div class="header-right">
+    <div id="auth-form">
+      <span id="auth-msg"></span>
+      <input type="email" id="emailInput" placeholder="Ваш e-mail" autocomplete="email">
+      <button id="sendLinkBtn">Отправить ссылку</button>
+      <input type="text" id="codeInput" placeholder="Код из письма"
+             inputmode="numeric" maxlength="6" autocomplete="one-time-code"
+             style="display:none">
+      <button id="verifyCodeBtn" style="display:none">Войти</button>
+    </div>
+    <div id="auth-info">
+      <span id="auth-email"></span>
+      <button id="logoutBtn">Выйти</button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <!-- Приглашение для неавторизованных -->
+  <div id="login-prompt">
+    Чтобы загрузить или отредактировать отчёт, необходимо <strong>войти</strong> через e-mail.
+  </div>
+
+  <!-- Секция администратора: отчёты на рассмотрении -->
+  <div id="admin-section">
+    <div class="card">
+      <div class="card-header">Отчёты на рассмотрении (data.up/10_up)</div>
+      <div class="card-body">
+        <div class="state-loading" id="staged-loading">Загрузка…</div>
+        <table id="staged-table" style="display:none">
+          <thead>
+            <tr>
+              <th>Шифр</th>
+              <th>Маршрут</th>
+              <th>Автор</th>
+              <th>Загрузил</th>
+              <th>Год</th>
+              <th>Дата</th>
+              <th>Файл</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="staged-tbody"></tbody>
+        </table>
+        <div class="empty-msg" id="staged-empty" style="display:none">Нет отчётов на рассмотрении</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Секция администратора: скрытые отчёты (остаются в поиске, но файл не кешируется и не показывается) -->
+  <div id="hidden-reports-section">
+    <div class="card">
+      <div class="card-header">Скрытые отчёты</div>
+      <div class="card-body">
+        <textarea id="hidden-reports-text" rows="4"
+                  placeholder="Шифр-ДопШифр через &quot;;&quot;, &quot;,&quot; или пробел, например: 00012-TLIB 345"></textarea>
+        <div class="btn-row">
+          <button type="button" id="hidden-reports-save" class="btn btn-primary" disabled>Сохранить</button>
+        </div>
+        <div class="notice" id="hidden-reports-notice"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Секция «Мои отчёты»: опубликованные отчёты текущего пользователя (ЗагрузилID). Сворачиваема, по умолчанию свёрнута -->
+  <div id="my-reports-section">
+    <div class="card">
+      <div class="card-header collapsible" id="my-reports-header">
+        <span>Мои отчёты<span class="my-reports-count" id="my-reports-count"></span></span>
+        <span class="collapse-arrow" id="my-reports-arrow">&#9654;</span>
+      </div>
+      <div class="card-body" id="my-reports-body" style="display:none">
+        <table id="my-reports-table">
+          <thead>
+            <tr>
+              <th>Шифр</th>
+              <th>Маршрут</th>
+              <th>Автор</th>
+              <th>Год</th>
+              <th>Дата</th>
+              <th>Файл</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="my-reports-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Единая форма загрузки / модерации (все авторизованные) -->
+  <div id="report-section">
+    <!-- Баннер: загрузки заблокированы из-за нехватки места на диске -->
+    <div id="upload-disk-banner" class="upload-disk-banner" style="display:none">
+      <span class="upload-disk-banner-icon">⚠️</span>
+      <span>Загрузка временно недоступна: на сервере недостаточно места на диске.
+        Обратитесь к администратору.</span>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span id="form-title">Загрузка и изменение отчёта</span>
+      </div>
+      <div class="notice warning" id="replace-notice"></div>
+      <div class="card-body">
+
+        <form id="reportForm" novalidate>
+          <input type="hidden" id="edit-orig-id">
+
+          <table class="form-table">
+            <tbody>
+
+              <tr>
+                <td>Маршрут<span class="req">*</span></td>
+                <td>
+                  <textarea id="f-marshrut" name="marshrut" rows="3" maxlength="5000"></textarea>
+                  <div class="field-error" id="err-marshrut"></div>
+                </td>
+              </tr>
+
+              <tr>
+                <td>Шифр<span class="req">*</span>/Доп.&nbsp;Шифр</td>
+                <td>
+                  <div class="code-row">
+                    <input type="number" id="f-shifr" name="shifr" min="1" max="999999">
+                    <span class="code-sep">-</span>
+                    <input type="text" id="f-dopshifr" name="dopshifr" class="dopshifr-input" maxlength="5" placeholder="TLIB">
+                    <button type="button" id="edit-report-btn" class="disabled"
+                            title="Редактировать уже имеющийся отчёт может загрузивший его или библиотекарь">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>
+                      </svg>
+                      Редактировать отчёт
+                    </button>
+                    <span class="code-hint" id="code-hint"></span>
+                  </div>
+                  <div class="field-error" id="err-code"></div>
+                </td>
+              </tr>
+
+              <tr>
+                <td>Район общий</td>
+                <td>
+                  <select id="f-raion-obshiy" name="raion_obshiy">
+                    <option value="">—</option>
+                  </select>
+                  <input type="text" id="f-raion-obshiy-custom"
+                         placeholder="Введите район" maxlength="500" style="display:none;margin-top:4px">
+                </td>
+              </tr>
+
+              <tr>
+                <td>Район</td>
+                <td><input type="text" id="f-raion" name="raion" maxlength="500"></td>
+              </tr>
+
+              <tr>
+                <td>Автор</td>
+                <td><input type="text" id="f-avtor" name="avtor" maxlength="500"></td>
+              </tr>
+
+              <tr>
+                <td>Тип</td>
+                <td>
+                  <select id="f-tip" name="tip">
+                    <option value="">—</option>
+                  </select>
+                </td>
+              </tr>
+
+              <tr>
+                <td>Категория похода</td>
+                <td>
+                  <div class="month-row">
+                    <span>с</span>
+                    <select id="f-kat-s" name="kategoriya_s"><option value="">—</option></select>
+                    <span>по</span>
+                    <select id="f-kat-po" name="kategoriya_po"><option value="">—</option></select>
+                  </div>
+                  <div class="field-error" id="err-kat"></div>
+                </td>
+              </tr>
+
+              <tr>
+                <td>Год<span class="req">*</span></td>
+                <td>
+                  <input type="number" id="f-god" name="god" min="1900" style="width:90px">
+                  <div class="field-error" id="err-god"></div>
+                </td>
+              </tr>
+
+              <tr>
+                <td>Месяц</td>
+                <td>
+                  <div class="month-row">
+                    <span>с</span>
+                    <select id="f-mes-s" name="mesyats_s"><option value="0">—</option></select>
+                    <span>по</span>
+                    <select id="f-mes-po" name="mesyats_po"><option value="0">—</option></select>
+                  </div>
+                  <div class="field-error" id="err-mes"></div>
+                </td>
+              </tr>
+
+              <tr>
+                <td>Тип судна</td>
+                <td><input type="text" id="f-tip-sudna" name="tip_sudna" maxlength="200"></td>
+              </tr>
+
+              <tr>
+                <td>Город</td>
+                <td><input type="text" id="f-gorod" name="gorod" maxlength="200"></td>
+              </tr>
+
+              <tr>
+                <td>Комментарий</td>
+                <td><input type="text" id="f-kommentarii" name="kommentarii" maxlength="10000"></td>
+              </tr>
+
+              <tr>
+                <td>Загрузил</td>
+                <td><input type="text" id="f-zagruzil" name="zagruzil_imya" maxlength="200"></td>
+              </tr>
+
+              <tr>
+                <td id="file-row-label">Дополнения<span class="req">*</span><br>
+                  <span style="font-size:11px;color:#aaa">(файл .zip или .pdf)</span></td>
+                <td>
+                  <div class="file-widget">
+
+                    <!-- Режим edit: текущий файл -->
+                    <div id="file-current">
+                      <span id="file-current-name"></span>
+                      <a id="file-current-dl" class="dl-icon" href="#" download title="Скачать файл">
+                        <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M4 19 L20 19" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+                          <path d="M12 0 L12 17" stroke="currentColor" stroke-width="3" stroke-linecap="round" fill="none"/>
+                          <path d="M7 12 L12 17 L17 12" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                        </svg>
+                      </a>
+                      <button type="button" id="file-current-delete">Удалить</button>
+                    </div>
+
+                    <!-- Выбор нового файла -->
+                    <div id="file-pick">
+                      <input type="file" id="f-file" accept=".zip,.pdf">
+                      <span class="file-info" id="file-info"></span>
+                      <button type="button" id="file-pick-clear">× убрать</button>
+                    </div>
+
+                  </div>
+                  <div class="field-error" id="err-file"></div>
+                  <div id="file-mismatch-note" style="display:none; margin-top:6px; font-size:12px; color:#b45309; background:#fffbeb; border:1px solid #fde68a; border-radius:4px; padding:5px 8px;"></div>
+                </td>
+              </tr>
+
+            </tbody>
+          </table>
+
+          <!-- Комментарий администратора (только в режиме edit) -->
+          <div id="admin-comment-wrap">
+            <div class="ac-label">Комментарий администратора (уйдёт в письмо автору, не сохраняется в отчёт)</div>
+            <textarea id="f-admin-comment" placeholder="Необязательно"></textarea>
+          </div>
+
+          <!-- Опция подавления письма (только в режиме edit) -->
+          <div id="no-email-wrap" style="display:none; margin-top:10px;">
+            <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:#555; cursor:pointer;">
+              <input type="checkbox" id="f-no-email"> Не отправлять письмо загрузившему
+            </label>
+          </div>
+
+          <!-- Причина удаления (виден при просмотре запроса удаления) -->
+          <div id="delete-reason-wrap">
+            <div class="dr-label">Причина удаления</div>
+            <textarea id="f-delete-reason" readonly rows="3"></textarea>
+          </div>
+
+          <!-- Загрузивший отчёт: id, e-mail, имя (только администраторам) -->
+          <div id="uploader-info-wrap">
+            <div class="ui-label">Загрузивший отчёт (виден только администраторам)</div>
+            <div class="ui-fields">
+              <input type="text"   id="f-uploader-email" placeholder="E-mail">
+              <input type="text"   id="f-uploader-name"  readonly placeholder="Имя не найдено">
+              <input type="number" id="f-uploader-id"    readonly placeholder="ID" min="1">
+            </div>
+            <div class="field-error" id="err-uploader-email"></div>
+          </div>
+
+          <div class="btn-row">
+            <button type="submit" id="saveBtn"            class="btn btn-primary"            disabled>Опубликовать</button>
+            <button type="button" id="publishBtn"         class="btn btn-primary" style="display:none" disabled>Опубликовать</button>
+            <button type="button" id="rejectBtn"          class="btn btn-danger"  style="display:none">Отклонить</button>
+            <button type="button" id="deleteReportBtn"    class="btn btn-danger"  style="display:none">Удалить</button>
+            <button type="button" id="confirmDeleteBtn"   class="btn btn-danger"  style="display:none">Подтвердить удаление</button>
+            <button type="button" id="rejectDeleteBtn"    class="btn"             style="display:none">Отклонить запрос</button>
+            <button type="button" id="cancelEditBtn"      class="btn">Отмена</button>
+          </div>
+
+          <div id="upload-progress">
+            <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+            <div class="progress-text" id="progress-text"></div>
+          </div>
+        </form>
+
+        <div class="notice" id="form-notice"></div>
+
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<!-- Диалог подтверждения удаления отчёта -->
+<div id="delete-confirm-overlay" role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
+  <div id="delete-confirm-dialog">
+    <h3 id="delete-confirm-title">Удаление отчёта из библиотеки</h3>
+    <p>Вы действительно хотите удалить этот отчёт из библиотеки?<br>
+       Введите <strong>Шифр-ДопШифр</strong> для подтверждения.</p>
+    <input type="text" id="delete-confirm-input" placeholder="Например: 00012-TLIB" autocomplete="off">
+    <div id="delete-confirm-reason-label">Причина удаления:</div>
+    <textarea id="delete-confirm-reason" placeholder="Обязательно укажите причину удаления"></textarea>
+    <div id="delete-confirm-err"></div>
+    <div id="delete-confirm-btns">
+      <button type="button" id="delete-confirm-cancel-btn" class="btn">Отмена</button>
+      <button type="button" id="delete-confirm-ok-btn" class="btn btn-danger">Удалить</button>
+    </div>
+  </div>
+</div>
+
+<script src="/js/upload.js" type="module"></script>
+</body>
+</html>
