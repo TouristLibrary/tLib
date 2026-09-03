@@ -246,6 +246,14 @@ tail -20 logs/app.log
 grep "$(date +%Y-%m-%d)" logs/critical.log
 ```
 
+**Приложение работает, но сайт недоступен снаружи (только для варианта Tailscale Funnel):** если `curl http://127.0.0.1:8080/health` отвечает 200, `tailscale funnel status` пишет «Funnel on», а публичный адрес не открывается — это известный баг Tailscale (смена «домашнего» DERP-релея без уведомления пиров), не проблема приложения. Проверка реального публичного пути (обычный `curl` до `hostname.tailnet-name.ts.net` с сервера не годится — резолвится через MagicDNS в адрес tailnet и всегда отвечает 200):
+
+```bash
+curl --doh-url https://dns.google/dns-query https://hostname.tailnet-name.ts.net/health
+```
+
+Лечится через `sudo systemctl restart tailscaled`. При установленном `tlib-net-watchdog.timer` (см. [DEPLOY.md](DEPLOY.md#watchdog-публичной-доступности-рекомендуется-для-funnel)) перезапуск выполняется автоматически в течение 5–15 минут.
+
 ### Мониторинг безопасности
 
 ```bash

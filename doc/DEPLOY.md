@@ -310,6 +310,50 @@ sudo systemctl daemon-reload && sudo systemctl enable tlibapp && sudo systemctl 
 
 Результат: публичный HTTPS адрес вида `https://hostname.tailnet-name.ts.net`
 
+#### Watchdog публичной доступности (рекомендуется для Funnel)
+
+Известный класс багов Tailscale: узел может сменить «домашний» DERP-релей (например, из-за разницы в задержке до соседних регионов всего в 1 мс), при этом пиры и ingress-серверы Funnel продолжают слать трафик на старый релей. Публичный сайт и SSH через tailnet перестают быть доступны на неопределённое время (наблюдалось — почти 2 часа), хотя сам сервер и приложение полностью исправны. Диагностический признак: `tailscale funnel status` по-прежнему пишет «Funnel on», `tailscale status --json` не показывает никаких `Health`-предупреждений, `localhost:8080` отвечает 200 — но публичный URL не открывается (в браузере обычно `PR_END_OF_FILE_ERROR`). Лечится только перезапуском `tailscaled` или перезагрузкой сервера; способа закрепить домашний DERP штатными средствами Tailscale нет.
+
+Обычная проверка `curl https://hostname.tailnet-name.ts.net/` **не годится** для обнаружения — с самого сервера (и с любой машины в том же tailnet) имя резолвится через MagicDNS в адрес tailnet (`100.x.x.x`) и всегда отвечает 200, минуя реальный публичный ingress. Проверять нужно через собственный DNS-over-HTTPS, чтобы имя резолвилось так же, как для внешнего браузера:
+
+```bash
+curl --doh-url https://dns.google/dns-query https://hostname.tailnet-name.ts.net/health
+```
+
+Скрипт `tools/tlib-net-watchdog.sh` автоматизирует эту проверку: если локальное приложение отвечает, а публичный путь — нет (после двух попыток с паузой), перезапускает `tailscaled`. Установка (на сервере, после копирования `tools/`):
+
+```bash
+chmod +x /opt/TlibWebApp/tools/tlib-net-watchdog.sh
+
+sudo tee /etc/systemd/system/tlib-net-watchdog.service >/dev/null <<'EOF'
+[Unit]
+Description=Watchdog публичной доступности TlibWebApp через Tailscale Funnel
+After=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/TlibWebApp/tools/tlib-net-watchdog.sh https://hostname.tailnet-name.ts.net/health
+EOF
+
+sudo tee /etc/systemd/system/tlib-net-watchdog.timer >/dev/null <<'EOF'
+[Unit]
+Description=Периодическая проверка публичной доступности TlibWebApp
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload && sudo systemctl enable --now tlib-net-watchdog.timer
+```
+
+Проверка: `journalctl -u tlib-net-watchdog -n 10 --no-pager` — без строки о перезапуске означает, что публичный путь сейчас живой; `systemctl list-timers tlib-net-watchdog` показывает следующий запуск.
+
+> Для варианта с Caddy этот watchdog не нужен — там нет Tailscale Funnel и связанного с ним класса сбоев.
+
 ### Caddy + Let's Encrypt (с доменом)
 
 Для развертывания с собственным доменом:
