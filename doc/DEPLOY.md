@@ -230,10 +230,13 @@ WorkingDirectory=/opt/TlibWebApp
 ExecStart=/opt/TlibWebApp/start_ubuntu_local.sh
 Restart=always
 RestartSec=10
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+> **`TimeoutStopSec=15`** — страховка на случай, если graceful shutdown залипнет (например, на `to_thread`-операциях File Watcher), а не основной механизм остановки. Значение 15, а не меньше — чтобы не обрезать штатную отмену фоновых задач в `lifespan` при обычном рестарте.
 
 **Для Tailscale Funnel:**
 
@@ -282,6 +285,7 @@ WorkingDirectory=/opt/TlibWebApp
 ExecStart=/opt/TlibWebApp/start_ubuntu_caddy.sh
 Restart=always
 RestartSec=10
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target

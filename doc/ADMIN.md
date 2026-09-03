@@ -432,6 +432,30 @@ sudo systemctl restart tlibapp
 tail -f logs/app.log
 ```
 
+### Перезапуск без пароля (NOPASSWD)
+
+Если `sudo systemctl restart tlibapp` запрашивает пароль (нет интерактивного доступа к паролю
+root), настройте один раз узкое правило sudoers. Создавать и редактировать файл **только**
+через `visudo` — он проверяет синтаксис перед сохранением, ошибка в обычном редакторе может
+сломать `sudo` целиком:
+
+```bash
+sudo visudo -f /etc/sudoers.d/tlibapp
+```
+
+Содержимое (замените `om` на имя вашего пользователя; путь к `systemctl` проверьте командой
+`command -v systemctl` — обычно `/usr/bin/systemctl` или `/bin/systemctl`):
+
+```
+om ALL=(root) NOPASSWD: /usr/bin/systemctl start tlibapp, /usr/bin/systemctl stop tlibapp, /usr/bin/systemctl restart tlibapp, /usr/bin/systemctl status tlibapp
+```
+
+Важно:
+- перечислять команды явно (`start`/`stop`/`restart`/`status`), **без** wildcard вида
+  `systemctl *` — это даёт полный root-доступ через `systemctl edit`/подмену юнитов;
+- сопоставление в sudoers буквальное — правило под `tlibapp` не сработает для
+  `tlibapp.service`, вызывайте команду ровно так, как указано в правиле.
+
 ---
 
 **См. также:**

@@ -1,6 +1,10 @@
-# Version 6.7 - 10.07.2026 09:45:00 GMT
+# Version 6.8 - 03.09.2026 13:26:00 GMT
 # FastAPI приложение для просмотра архивов и поиска в базе данных
 # Описание: Главный файл приложения, инициализирует FastAPI сервер, регистрирует роутеры и middleware.
+# 6.8: удалён signal_handler (перехватывал SIGTERM/SIGINT и только логировал их, не завершая
+#           процесс) — из-за него uvicorn не получал сигнал, graceful shutdown (lifespan) не
+#           отрабатывал никогда, и остановка/рестарт сервиса всегда заканчивались SIGKILL по
+#           TimeoutStopSec. Убран и неиспользуемый после этого import signal.
 # 6.7: app.state.hidden_reports — кэш списка скрытых отчётов (см. services/hidden_reports.py),
 #           загружается после init_auth_db() (настройка хранится в auth.db).
 # 6.6: удалён неиспользуемый импорт DIGEST_TIMEZONE_OFFSET_HOURS (используется только в digest.py).
@@ -18,7 +22,6 @@
 import asyncio
 import logging
 import os
-import signal
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -316,13 +319,9 @@ if Path(CACHE_DIRECTORY).exists():
 else:
     app_logger.warning(f"Cache directory not found: {CACHE_DIRECTORY}")
 
-def signal_handler(signum, frame):
-    """Обработчик сигналов для graceful shutdown"""
-    app_logger.info("\nПолучен сигнал завершения работы. Завершаем...")
-
-# Регистрируем обработчики сигналов
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+# Обработка SIGTERM/SIGINT для graceful shutdown не переопределяется — её обеспечивает
+# сам uvicorn, вызывая shutdown-ветку lifespan (см. выше). Собственный signal_handler
+# был удалён в 6.8: он только логировал сигнал и не завершал процесс.
 
 # Запуск приложения
 if __name__ == "__main__":
