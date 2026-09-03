@@ -1,7 +1,9 @@
-# Version 1.2 - 16.06.2026 22:00:00 GMT
+# Version 1.3 - 03.09.2026 19:10:00 GMT
 # Конфигурация приложения TlibWebApp
 # Описание: Метаданные, сетевые настройки, пути к ресурсам, логирование,
 #           редиректы и ключи app.state.
+# 1.3: LOG_DEBUG_LEVEL переопределяется переменной окружения (включение debug.log
+#      на тестовом стенде через data.secret/.env без правки кода).
 # 1.2: добавлены OG_IMAGE_PATH/OG_IMAGE_WIDTH/OG_IMAGE_HEIGHT (Open Graph картинка).
 # 1.1: добавлены REDIRECT_SOURCE_ALIASES, REDIRECT_DEFAULT_ASPX_PATHS (legacy IIS),
 #      ROBOTS_CLEAN_PARAMS (Яндекс Clean-param для UTM/openstat меток).
@@ -62,6 +64,8 @@ OG_IMAGE_HEIGHT: int = 630
 
 # ==================== ЛОГИРОВАНИЕ ====================
 
+import os
+
 # Директория для файлов логов
 LOG_DIRECTORY: str = "logs"
 
@@ -78,7 +82,9 @@ LOG_CONSOLE_LEVEL: str = "WARNING"
 
 # Уровень логирования для debug.log (DEBUG, INFO, WARNING, ERROR, CRITICAL, OFF)
 # OFF - полностью отключает debug.log (рекомендуется для production)
-LOG_DEBUG_LEVEL: str = "OFF"
+# Переопределяется переменной окружения LOG_DEBUG_LEVEL из data.secret/.env
+# (удобно включать DEBUG на тестовом стенде без правки кода)
+LOG_DEBUG_LEVEL: str = os.environ.get("LOG_DEBUG_LEVEL", "OFF")
 
 # Максимальные размеры файлов логов (в байтах)
 # При достижении размера файл автоматически ротируется

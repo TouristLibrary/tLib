@@ -127,11 +127,7 @@ AUTH_COOKIE_SECURE=true
 
 **Production-режим:** отключите отладочное логирование.
 
-В `config/app.py` (тот же файл, где `DATA_DIRECTORY`) установите:
-
-```python
-LOG_DEBUG_LEVEL: str = "OFF"
-```
+`LOG_DEBUG_LEVEL` в `config/app.py` по умолчанию `"OFF"` и переопределяется переменной окружения `LOG_DEBUG_LEVEL` из `data.secret/.env` — так можно включить `debug.log` на тестовом стенде (`LOG_DEBUG_LEVEL=DEBUG`) без правки кода. На production `.env` эту переменную не задавайте — сработает дефолт `"OFF"`.
 
 В `js/config/constants.js` установите:
 
