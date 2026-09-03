@@ -1,0 +1,356 @@
+<!-- Version 3.6 - 02.09.2026
+    Страница "О проекте" для TlibWebApp.
+    Содержит полную информацию о проекте: историю создания, описание,
+    участников, информационную поддержку и контакты.
+    Навигационная панель фиксируется вверху при прокрутке (sticky).
+    3.3: добавлена зона SEO_HEAD для серверной подстановки canonical + OG.
+    3.4: аудит редизайна — семантика (nav/main, h1/h2), https-ссылки,
+    убраны декоративные <br>, левое выравнивание и ограничение ширины текста,
+    токены вместо хардкода (радиусы, серый фон), оптические паддинги и тонированная тень.
+    3.5: линия под заголовками разделов — тихий 1px hairline (--color-border-light)
+    вместо насыщенной синей 2px полосы; консистентно с hr/.signature.
+    3.6: убран фоновый SVG со стока Vecteezy (лицензия запрещает распространение
+    файла в открытом репозитории) — фон страницы стал сплошным --color-bg.
+-->
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!--SEO_HEAD--><title>О проекте tLib</title>
+    <meta name="description" content="История библиотеки отчётов о спортивных туристских походах tLib: участники проекта, архив МГЦТК, скачивание каталога и всей библиотеки."><!--/SEO_HEAD-->
+    <link rel="icon" type="image/x-icon" href="assets/favicon.ico">
+    <link rel="stylesheet" href="css/styles.css">
+    <style>
+        body {
+            min-height: 100vh;
+        }
+
+        /* Навигационная панель */
+        .nav-bar {
+            max-width: 800px;
+            margin: 6px auto 6px auto;
+            padding: 8px 15px;
+            background: #fff;
+            border: 1px solid #ccc;
+            border-radius: 7px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 6px;
+            z-index: 100;
+        }
+
+        .nav-bar-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .nav-bar-icon {
+            width: 18px;
+            height: 18px;
+            color: #999;
+        }
+
+        .nav-bar a {
+            color: #3073b7;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        /* Стили специфичные для страницы "О проекте" */
+        .about-container {
+            max-width: 800px;
+            margin: 0 auto 40px auto;
+            padding: 32px 40px 44px 40px;
+            background: #fff;
+            border: 1px solid #ccc;
+            border-radius: 7px;
+            box-shadow: 0 2px 10px rgba(35, 90, 141, 0.08);
+        }
+
+        /* Главный заголовок (он же подзаголовок-описание проекта) */
+        .about-subtitle {
+            text-align: center;
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 5px;
+            color: #333;
+            text-wrap: balance;
+        }
+
+        /* Второй подзаголовок - архив */
+        .about-container p.about-subtitle-small {
+            text-align: center;
+            font-size: 14px;
+            margin-bottom: 20px;
+            color: #555;
+        }
+
+        /* Эпиграф */
+        .epigraph {
+            text-align: right;
+            font-style: italic;
+            color: #555;
+            margin: 20px 0 30px 0;
+            padding-right: 20px;
+            line-height: 1.5;
+            font-size: 13px;
+        }
+
+        .epigraph .author {
+            margin-top: 5px;
+            font-style: normal;
+            color: #666;
+        }
+
+        /* Заголовки разделов */
+        .about-container h2 {
+            margin: 30px 0 15px 0;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--color-border-light);
+            color: #333;
+            font-size: 20px;
+            text-align: center;
+            text-wrap: balance;
+        }
+
+        .about-container h2:first-of-type {
+            margin-top: 20px;
+        }
+
+        /* Абзацы */
+        .about-container p {
+            max-width: 68ch;
+            margin: 0 0 15px 0;
+            line-height: 1.7;
+            color: #333;
+            text-align: left;
+            text-wrap: pretty;
+        }
+
+        .about-container p.about-subtitle-small,
+        .contacts p {
+            max-width: none;
+        }
+
+        /* Ссылки */
+        .about-container a {
+            color: #3073b7;
+            text-decoration: none;
+        }
+
+        /* Текстовые ссылки — единый hover */
+        .nav-bar a:hover,
+        .about-container a:hover {
+            text-decoration: underline;
+        }
+
+        /* Списки */
+        .about-container ul,
+        .about-container ol {
+            margin: 0 0 15px 0;
+            padding-left: 25px;
+            line-height: 1.8;
+        }
+
+        .about-container li {
+            max-width: 68ch;
+            margin-bottom: 5px;
+            color: #333;
+        }
+
+        /* Подпись руководителя */
+        .signature {
+            text-align: right;
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            color: #555;
+            line-height: 1.6;
+        }
+
+        /* Контакты */
+        .contacts {
+            margin-top: 25px;
+            padding: 15px;
+            background: var(--color-bg);
+            border-radius: var(--border-radius);
+            text-align: center;
+        }
+
+        .contacts p {
+            margin: 0;
+            text-align: center;
+        }
+
+        /* Разделитель */
+        .about-container hr {
+            border: none;
+            border-top: 1px solid #ddd;
+            margin: 25px 0;
+        }
+
+        /* Микробаннер */
+        .microbanner {
+            display: inline-block;
+            vertical-align: middle;
+            margin: 0 5px;
+        }
+
+        .microbanner img {
+            border: 1px solid #ccc;
+            border-radius: var(--border-radius);
+        }
+
+        /* Блок кода */
+        .code-block {
+            background: #f4f4f4;
+            border: 1px solid #ddd;
+            border-radius: var(--border-radius);
+            padding: 12px 15px;
+            margin: 15px 0;
+            overflow-x: auto;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            color: #333;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .code-label {
+            font-weight: bold;
+            margin-bottom: 8px;
+            color: #555;
+        }
+
+        /* Адаптивность */
+        @media (max-width: 600px) {
+            .about-container {
+                margin: 20px 15px;
+                padding: 20px;
+            }
+
+            .about-subtitle {
+                font-size: 16px;
+            }
+
+            .epigraph {
+                padding-right: 0;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Навигационная панель -->
+    <nav class="nav-bar">
+        <div class="nav-bar-left">
+            <img src="assets/favicon.ico" class="nav-bar-icon" alt="tLib">
+            <a href="data.db/tlib.xlsx" download rel="nofollow" title="Скачать tlib.xlsx">Каталог</a>
+            <a href="https://rutracker.org/forum/viewtopic.php?t=6784948" target="_blank" rel="noopener noreferrer" title="Скачать всю библиотеку 2025.12.08">Торрент</a>
+            <a href="magnet:?xt=urn:btih:D3ABCA1737DDFC8879FC334338A67E424DBC1CB8&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet&dn=%D0%91%D0%B8%D0%B1%D0%BB%D0%B8%D0%BE%D1%82%D0%B5%D0%BA%D0%B0%20%D0%BE%D1%82%D1%87%D0%B5%D1%82%D0%BE%D0%B2%20%D0%BE%20%D1%81%D0%BF%D0%BE%D1%80%D1%82%D0%B8%D0%B2%D0%BD%D1%8B%D1%85%20%D0%BF%D0%BE%D1%85%D0%BE%D0%B4%D0%B0%D1%85%20(tlib.ru)%20-%2008.12.2025%20%5BPDF%5D" target="_blank" rel="noopener noreferrer" title="Скачать всю библиотеку 2025.12.08">Magnet</a>
+            <a href="cloud.html" title="Отчеты в облаке">Облако</a>
+			<a href="oldscan.html" title="Архивные сканы">Архив</a>
+        </div>
+        <a href="https://wiki.tlib.ru" target="_blank" rel="noopener noreferrer" title="Подсказка Вики">Вики</a>
+    </nav>
+
+    <main class="about-container">
+
+        <h1 class="about-subtitle">Библиотека отчетов о спортивных походах</h1>
+        <p class="about-subtitle-small">
+            на основе архива Московского городского центрального туристского клуба<br>
+            при поддержке Федерации спортивного туризма г.Москвы
+        </p>
+
+        <div class="epigraph">
+            Нет дороге окончанья,<br>
+            Есть зато ее итог,<br>
+            Дороги трудны, но хуже без дорог.<br>
+            <span class="author">Ю. Визбор</span>
+        </div>
+
+        <h2>Рукописи не горят?</h2>
+        <p>Все, кто серьёзно ходил и ходит по необъятным просторам нашей Родины, не понаслышке знакомы с библиотекой
+            Московского турклуба на Большой Коммунистической (Москва, метро «Таганская», ныне ул. А. Солженицына, д.
+            17). Много незабываемых вечеров мы провели там, снимая на кальку схемы, изучая ключевые участки,
+            фотографируя ветхие кроки…</p>
+
+        <p>Как-то раз, делая подборку отчётов по одному из горных районов, я наткнулся на несколько отчётов 60-х годов.
+            В одном из них меня поразила фраза: «Мы подошли к перевальному взлёту. Ослики здесь не пройдут, понял я».
+            Самое интересное, что действительно имелись в виду ослики (серые и с ушками) — их наняли в нижних кошах для
+            заброски под перевал. Эта фраза стала рефреном всего нашего похода. С тех пор я всегда старался прочитать не
+            только самые свежие отчёты, но и отчёты наших родителей о тех временах. Да, это были времена, когда был
+            проложен первый плановый маршрут от Фишта до Красной Поляны, когда Приют-11 ещё только строился, когда
+            Кавказ был относительно спокойным местом… Эти отчёты стали для меня мостом между тем временем и этим.
+            Библиотека наполнилась новым смыслом.</p>
+
+        <p>Прошли годы. В один из обычных серых зимних дней 2002 года, просматривая офисный почтовый ящик, я наткнулся
+            на письмо от своего старого боевого товарища — письмо с цитатой о возможном выселении библиотеки МГЦТК.
+            Стало тревожно. Подавляющее большинство отчётов существует в единственном экземпляре. Авторов «иных уж нет,
+            а те далече». Вдруг стало понятно, что отчёты — это РУКОПИСИ. А рукописи, как известно, не горят, но доступ
+            к ним для обычных смертных становится сильно затруднён. Возникло острое желание сохранить библиотеку
+            Московского турклуба для настоящих и будущих туристов.</p>
+
+        <p>Собственно, так и начался этот проект. Я позвонил своим давним знакомым Сергею Чернику и Толе Джулии. Ребята
+            сразу поддержали идею. Было решено начать Проект.</p>
+
+        <h2>Проект</h2>
+        <p>Проект по сканированию архива МГЦТК на данный момент практически завершен. Он продолжался восемь лет (2002-2010 года). Выложено около шести тысяч отсканированных отчетов.</p>
+		<p> У каждого есть возможность самостоятельно выкладывать отчеты на <a href="https://tlib.ru" target="_blank" rel="noopener noreferrer">https://tlib.ru</a>. Для этого нужно нажать кнопку "Опубликовать отчет", заполнить карточку отчета (автор, маршрут, год, категория и т.п.) и прикрепить файл с отчетом. После проверки модератором отчет будет опубликован на сайте.
+        </p>
+        <p>Благодаря вам библиотека продолжает расти (на 2025 год более 11 тысяч отчетов). В ней есть не только отчеты МГЦТК, но и отчеты многих других турклубов.</p>
+
+        <h2>Участники</h2>
+        <ul>
+            <li>Михаил Орлов (руководитель проекта)</li>
+            <li>Виктор Евлюхин (руководитель группы сканирования), Оксана и Евгений Евлюхины (участники группы сканирования)</li>            
+            <li>Олеся Лещанова, Ольга Бутыгина (поддержка сайта)</li>
+			<li>Сергей Титов (перевод в pdf отсканированных отчетов)</li>
+        </ul>
+
+        <h2>Информационная поддержка</h2>
+        <p>Генеральный спонсор проекта — <a href="https://www.runa.ru/" target="_blank" rel="noopener noreferrer">Консалтинговая группа РУНА</a>.</p>
+        <p>Хотите тоже помочь проекту? Разместите у себя на сайте микробаннер:
+            <a class="microbanner" title="Отчеты о спортивных туристских походах" target="_blank" rel="noopener noreferrer"
+                href="https://www.tlib.ru/">
+                <img src="assets/Tlibaner.gif" width="88" height="31" alt="tLib.ru">
+            </a>
+            или ссылку <a href="https://www.tlib.ru/" target="_blank" rel="noopener noreferrer">https://www.tlib.ru</a> на доступных Вам ресурсах.
+        </p>
+
+		<p class="code-label">Код микробаннера:</p>
+		<pre class="code-block"><code>
+&lt;a title="Отчеты о спортивных туристских походах" target="_blank" rel="noopener noreferrer" href="https://www.tlib.ru/"&gt;
+&lt;img border="0" src="https://wiki.tlib.ru/images/a/a2/Tlibaner.gif" width="88" height="31"&gt;&lt;/a&gt;
+		</code></pre>
+
+        <h2>Инициативная группа</h2>
+        <ul>
+            <li>Михаил Орлов — руководитель Проекта, участник горной секции турклуба МГУ им. М.В.Ломоносова (84–94
+                гг.), председатель совета директоров Консалтинговой Группы Руна, <a
+                    href="https://www.runa.ru/" target="_blank" rel="noopener noreferrer">https://www.runa.ru</a></li>
+            <li>Анатолий Джулий — мастер спорта России международного класса</li>
+        </ul>
+        <p>Неоценимую помощь проекту оказал Сергей Черник — президент Федерации спортивного туризма г. Москвы 2000–2007
+            гг., заслуженный мастер спорта России (погиб в августе 2007 г. при первопрохождении р. Юрункаш).</p>
+
+        <div class="contacts">
+            <p>По всем вопросам связанным с Проектом: <a
+                    href="mailto:tlibkeeper@gmail.com?subject=tLib.Вопрос" target="_blank" rel="noopener noreferrer">tlibkeeper@gmail.com</a></p>
+        </div>
+
+        <div class="signature">
+            С уважением, руководитель Проекта<br>
+            Михаил Орлов<br>
+            2002–2025
+        </div>
+    </main>
+</body>
+
+</html>

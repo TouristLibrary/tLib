@@ -1,0 +1,26 @@
+{
+  "name": "tlib-tests",
+  "version": "1.0.0",
+  "description": "E2E tests for TlibWebApp (Playwright).",
+  "private": true,
+  "scripts": {
+    "test": "playwright test -c playwright/playwright.config.js",
+    "test:e2e:report": "playwright show-report",
+    "test:critical": "playwright test -c playwright/playwright.config.js critical-path",
+    "test:search": "playwright test -c playwright/playwright.config.js search",
+    "test:report": "playwright test -c playwright/playwright.config.js report",
+    "test:navigation": "playwright test -c playwright/playwright.config.js navigation",
+    "test:security": "playwright test -c playwright/playwright.config.js security",
+    "test:responsive": "playwright test -c playwright/playwright.config.js responsive",
+    "test:performance": "playwright test -c playwright/playwright.config.js performance",
+    "test:predeploy": "playwright test -c playwright/playwright.config.js",
+    "test:tagged:critical": "playwright test -c playwright/playwright.config.js --grep @critical",
+    "test:tagged:smoke": "playwright test -c playwright/playwright.config.js --grep @smoke",
+    "test:tagged:security": "playwright test -c playwright/playwright.config.js --grep @security",
+    "test:api": "python -m pytest api -v",
+    "test:unit": "python -m pytest unit -v"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.57.0"
+  }
+}

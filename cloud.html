@@ -1,0 +1,204 @@
+<!-- Version 1.1 - 02.09.2026
+    Страница "Отчеты в облаке" для TlibWebApp.
+    Форма для генерации ссылок на скачивание файлов отчётов из pCloud (json, zip, pdf).
+    Дизайн повторяет oldscan.html: sticky nav-bar, белый контейнер.
+    1.1: убран фоновый SVG со стока Vecteezy (лицензия запрещает распространение
+    файла в открытом репозитории) — фон страницы стал сплошным --color-bg.
+-->
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Отчеты в облаке</title>
+    <link rel="icon" type="image/x-icon" href="assets/favicon.ico">
+    <link rel="stylesheet" href="css/styles.css">
+    <style>
+        body {
+            min-height: 100vh;
+        }
+
+        /* Навигационная панель */
+        .nav-bar {
+            max-width: 800px;
+            margin: 6px auto 6px auto;
+            padding: 8px 15px;
+            background: #fff;
+            border: 1px solid #ccc;
+            border-radius: 7px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: sticky;
+            top: 6px;
+            z-index: 100;
+        }
+
+        .nav-bar-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .nav-bar-icon {
+            width: 18px;
+            height: 18px;
+            color: #999;
+        }
+
+        .nav-bar-icon-link {
+            display: flex;
+            align-items: center;
+            line-height: 0;
+        }
+
+        .nav-bar a {
+            color: #3073b7;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .nav-bar a:hover {
+            text-decoration: underline;
+        }
+
+        .nav-bar-current {
+            font-size: 14px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        /* Основной контейнер */
+        .about-container {
+            max-width: 800px;
+            margin: 0 auto 40px auto;
+            padding: 30px 40px;
+            background: #fff;
+            border: 1px solid #ccc;
+            border-radius: 7px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
+        }
+
+        /* Главный заголовок */
+        .about-container h1 {
+            margin: 0 0 10px 0;
+            color: #333;
+            font-size: 24px;
+            text-align: center;
+        }
+
+        /* Подзаголовок */
+        .about-container p.about-subtitle-small {
+            text-align: center;
+            font-size: 14px;
+            margin-bottom: 35px;
+            color: #555;
+        }
+
+        .about-container p.about-subtitle-small a {
+            color: #3073b7;
+            text-decoration: none;
+        }
+
+        .about-container p.about-subtitle-small a:hover {
+            text-decoration: underline;
+        }
+
+        /* Обёртка формы — центрирование и ограничение ширины */
+        .scan-form-wrap {
+            max-width: 420px;
+            margin: 0 auto;
+        }
+
+        /* Кнопка результата — полная ширина, как кнопка Поиск */
+        .scan-form-wrap .form-actions button {
+            flex: 1 1 auto;
+        }
+
+        /* Блок результата — под кнопкой, внутри той же обёртки */
+        .result-block {
+            margin-top: 8px;
+            padding: 10px 12px;
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            text-align: center;
+            display: none;
+        }
+
+        .result-block.visible {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            justify-content: center;
+        }
+
+        .result-block a {
+            color: #3073b7;
+            font-size: 15px;
+            text-decoration: none;
+            font-weight: 500;
+            word-break: break-all;
+        }
+
+        .result-block a:hover {
+            text-decoration: underline;
+        }
+
+        /* Адаптивность */
+        @media (max-width: 600px) {
+            .about-container {
+                margin: 10px 15px 30px;
+                padding: 20px;
+            }
+
+            .about-container h1 {
+                font-size: 20px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Навигационная панель -->
+    <div class="nav-bar">
+        <div class="nav-bar-left">
+            <a href="about.html" class="nav-bar-icon-link" title="О проекте tLib">
+                <img src="assets/favicon.ico" class="nav-bar-icon" alt="tLib">
+            </a>
+            <a href="data.db/tlib.xlsx" download title="Скачать tlib.xlsx">Каталог</a>
+            <a href="https://rutracker.org/forum/viewtopic.php?t=6784948" target="_blank" rel="noopener noreferrer" title="Скачать всю библиотеку 2025.12.08">Торрент</a>
+            <a href="magnet:?xt=urn:btih:D3ABCA1737DDFC8879FC334338A67E424DBC1CB8&tr=http%3A%2F%2Fbt3.t-ru.org%2Fann%3Fmagnet&dn=%D0%91%D0%B8%D0%B1%D0%BB%D0%B8%D0%BE%D1%82%D0%B5%D0%BA%D0%B0%20%D0%BE%D1%82%D1%87%D0%B5%D1%82%D0%BE%D0%B2%20%D0%BE%20%D1%81%D0%BF%D0%BE%D1%80%D1%82%D0%B8%D0%B2%D0%BD%D1%8B%D1%85%20%D0%BF%D0%BE%D1%85%D0%BE%D0%B4%D0%B0%D1%85%20(tlib.ru)%20-%2008.12.2025%20%5BPDF%5D" target="_blank" rel="noopener noreferrer" title="Скачать всю библиотеку 2025.12.08">Magnet</a>
+            <span class="nav-bar-current" title="Отчеты в облаке">Облако</span>
+            <a href="oldscan.html" title="Архивные сканы">Архив</a>
+        </div>
+        <a href="https://wiki.tlib.ru" target="_blank" rel="noopener noreferrer" title="Подсказка Вики">Вики</a>
+    </div>
+
+    <div class="about-container">
+        <h1>Отчеты в облаке</h1>
+        <p class="about-subtitle-small">
+            <a href="https://filedn.eu/laITJQDRIPpbOjdHpDVwUCb/Tlib/%23%D0%9A%D0%B0%D1%82%D0%B0%D0%BB%D0%BE%D0%B3%20tlib.ru.xlsx" target="_blank" rel="noopener noreferrer">Каталог библиотеки</a>
+        </p>
+
+        <div class="scan-form-wrap">
+            <form id="cloudForm">
+                <label>Шифр
+                    <input type="text" id="code" placeholder="например, 1" autocomplete="off">
+                </label>
+                <label>ДопШифр
+                    <input type="text" id="suffix" placeholder="например, FRT" autocomplete="off">
+                </label>
+                <div class="form-actions full">
+                    <button type="submit">Получить ссылку</button>
+                </div>
+            </form>
+            <div class="result-block" id="result"></div>
+        </div>
+    </div>
+
+    <script src="js/cloud.js"></script>
+</body>
+
+</html>
