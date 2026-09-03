@@ -228,8 +228,8 @@ data.up/20_go/    30_processing/      data/           (корень)
 | Компонент | Технология | Версия | Назначение |
 |-----------|------------|--------|------------|
 | Server | uvicorn | 0.34.3 | ASGI сервер |
-| Framework | FastAPI | 0.115.12 | Веб-фреймворк |
-| ASGI | Starlette | 0.39.0+ | HTTP, статика, Range requests |
+| Framework | FastAPI | 0.141.1 | Веб-фреймворк |
+| ASGI | Starlette | 1.3.1+ | HTTP, статика, Range requests |
 | Database | SQLite | встроен | Хранение данных |
 | Validation | jsonschema | 4.20.0+ | Валидация JSON |
 | Media | PyMuPDF | 1.23.0+ | Конвертация PDF→PNG, оптимизация изображений |

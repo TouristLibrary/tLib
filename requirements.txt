@@ -1,17 +1,19 @@
 # FastAPI dependencies for TlibWebApp
-# Version 3.6 - 12.06.2026 15:00:00 GMT
+# Version 3.7 - 03.09.2026 12:57:00 GMT
 # Полный список зависимостей для создания изолированного Python окружения
 # Включает основные зависимости приложения
 # Обновлено: все версии закреплены точно (==) по фактическому окружению
 #            тестового сервера (pip freeze из /home/om/Tlib/venv) — локальный .venv
 #            и сервер должны совпадать бит-в-бит для воспроизводимости тестов
+# Обновлено 03.09.2026: устранение алертов Dependabot (15 CVE в fastapi/starlette/
+#            python-multipart) — подъём fastapi и starlette (см. doc/ARCHITECTURE.md),
+#            requests удалён как неиспользуемый (нет import requests в коде)
 
 # Основные зависимости приложения
-fastapi==0.115.12         # Веб-фреймворк для создания API (обновлено: исправления багов, совместимость с Pydantic 2.11)
-starlette==0.46.2         # ASGI фреймворк с поддержкой Range requests для PDF Fast Web View
+fastapi==0.141.1          # Веб-фреймворк для создания API (требует starlette>=0.46.0, pydantic>=2.9.0, Python>=3.10)
+starlette==1.3.1          # ASGI фреймворк с поддержкой Range requests для PDF Fast Web View (устраняет 7 CVE Dependabot)
 uvicorn[standard]==0.34.3 # ASGI сервер для запуска FastAPI (обновлено: улучшения производительности)
-requests==2.32.4          # HTTP запросы для утилит и скриптов
-python-multipart==0.0.20  # Обработка multipart/form-data для FastAPI (обязательно для request.form())
+python-multipart==0.0.32  # Обработка multipart/form-data для FastAPI (обязательно для request.form(); устраняет 7 CVE Dependabot)
 openpyxl==3.1.5           # Экспорт базы данных в XLSX (автообновление tlib.xlsx)
 jsonschema==4.25.1        # Валидация JSON файлов по схеме (File Watcher pipeline)
 PyMuPDF==1.26.7           # PDF рендеринг для конвертации в PNG (при PDF_TO_PNG_ENABLED=True)
