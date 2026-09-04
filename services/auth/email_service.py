@@ -1,4 +1,4 @@
-# Version 1.3 - 14.06.2026 13:40:00 GMT
+# Version 1.4 - 04.09.2026 14:25:00 GMT
 # Email service для TlibWebApp
 # Описание: Отправка magic link по email через Gmail SMTP (smtplib).
 #           Credentials читаются из config (загружаются из data.secret/.env).
@@ -8,12 +8,13 @@
 #           (гибридная авторизация: ссылка + цифровой код).
 # 1.3: send_report_decision() — удалён параметр published и мёртвая ветка «опубликован»
 #      (публикационные письма отправляются через send_report_published в notify.py).
+# 1.4: все темы писем получили префикс MAIL_SUBJECT_PREFIX (домен из SITE_URL).
 
 import smtplib
 from email.mime.text import MIMEText
 from urllib.parse import quote
 
-from config import SMTP_SERVER, SMTP_PORT, SMTP_SENDER, SMTP_PASSWORD, SITE_URL
+from config import SMTP_SERVER, SMTP_PORT, SMTP_SENDER, SMTP_PASSWORD, SITE_URL, MAIL_SUBJECT_PREFIX
 from logging_config import app_logger
 
 
@@ -54,7 +55,7 @@ def send_magic_link(email: str, token: str, redirect: str = "", code: str = "") 
     msg = MIMEText(body, "plain", "utf-8")
     msg["From"]    = SMTP_SENDER
     msg["To"]      = email
-    msg["Subject"] = "Вход на tLib"
+    msg["Subject"] = f"{MAIL_SUBJECT_PREFIX} Вход на tLib"
 
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as srv:
         srv.starttls()
@@ -82,7 +83,7 @@ def send_new_report_notice(admin_emails: list[str], report_id: str, uploader_nam
         return
 
     if is_edit:
-        subject = f"Отредактированный отчёт {report_id} ожидает рассмотрения"
+        subject = f"{MAIL_SUBJECT_PREFIX} Отредактированный отчёт {report_id} ожидает рассмотрения"
         body = (
             f"Пользователь «{uploader_name}» отредактировал отчёт {report_id}.\n"
             f"Изменения ожидают рассмотрения библиотекарями.\n\n"
@@ -90,7 +91,7 @@ def send_new_report_notice(admin_emails: list[str], report_id: str, uploader_nam
             f"{site_url}/upload.html\n"
         )
     else:
-        subject = "Загружен новый отчет"
+        subject = f"{MAIL_SUBJECT_PREFIX} Загружен новый отчет"
         body = (
             f"Загружен новый отчёт {report_id} от пользователя «{uploader_name}».\n\n"
             f"Для рассмотрения перейдите на страницу загрузки:\n"
@@ -128,7 +129,7 @@ def send_report_decision(uploader_email: str, report_id: str,
     if not uploader_email:
         return
 
-    subject = f"Отчёт {report_id} отклонён"
+    subject = f"{MAIL_SUBJECT_PREFIX} Отчёт {report_id} отклонён"
     action_line = f"Ваш отчёт {report_id} был отклонён библиотекарями."
 
     comment_section = ""
@@ -178,7 +179,7 @@ def send_report_published(uploader_email: str, report_id: str, report_url: str,
     msg = MIMEText(body, "plain", "utf-8")
     msg["From"]    = SMTP_SENDER
     msg["To"]      = uploader_email
-    msg["Subject"] = f"Отчёт {report_id} опубликован"
+    msg["Subject"] = f"{MAIL_SUBJECT_PREFIX} Отчёт {report_id} опубликован"
 
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as srv:
         srv.starttls()
@@ -215,7 +216,7 @@ def send_processing_failed_notice(admin_emails: list[str], report_id: str,
     msg = MIMEText(body, "plain", "utf-8")
     msg["From"]    = SMTP_SENDER
     msg["To"]      = ", ".join(admin_emails)
-    msg["Subject"] = f"Ошибка обработки отчёта {report_id}"
+    msg["Subject"] = f"{MAIL_SUBJECT_PREFIX} Ошибка обработки отчёта {report_id}"
 
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as srv:
         srv.starttls()
@@ -242,10 +243,10 @@ def send_delete_decision(requester_email: str, report_id: str, confirmed: bool,
         return
 
     if confirmed:
-        subject = f"Отчёт {report_id} удалён из библиотеки"
+        subject = f"{MAIL_SUBJECT_PREFIX} Отчёт {report_id} удалён из библиотеки"
         action_line = f"Ваш запрос на удаление отчёта {report_id} подтверждён, отчёт удалён из библиотеки."
     else:
-        subject = f"Запрос на удаление отчёта {report_id} отклонён"
+        subject = f"{MAIL_SUBJECT_PREFIX} Запрос на удаление отчёта {report_id} отклонён"
         action_line = f"Ваш запрос на удаление отчёта {report_id} отклонён, отчёт остаётся в библиотеке."
 
     comment_section = ""
@@ -294,7 +295,7 @@ def send_delete_request_notice(admin_emails: list[str], report_id: str,
     msg = MIMEText(body, "plain", "utf-8")
     msg["From"]    = SMTP_SENDER
     msg["To"]      = ", ".join(admin_emails)
-    msg["Subject"] = f"Запрос на удаление отчёта {report_id}"
+    msg["Subject"] = f"{MAIL_SUBJECT_PREFIX} Запрос на удаление отчёта {report_id}"
 
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as srv:
         srv.starttls()

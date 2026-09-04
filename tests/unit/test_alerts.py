@@ -1,7 +1,9 @@
-# Version 1.1 - 15.06.2026 10:18:00 GMT
+# Version 1.2 - 04.09.2026 14:25:00 GMT
 # Unit tests for services/alerts/
 # Описание: Тесты парсера critical.log, форматирования писем,
 #           логики троттлинга и сборки дайджеста. SMTP не вызывается (замокан).
+# Изменения v1.2: test_subject_prefix_tlib -> test_subject_prefix_domain/test_subject_prefix_reflects_domain
+#           (тема письма использует MAIL_SUBJECT_PREFIX — домен из SITE_URL — вместо хардкода "[tLib]").
 
 from __future__ import annotations
 
@@ -137,10 +139,19 @@ class TestBuildBody(unittest.TestCase):
         subject, _ = _build_body("DB_SWAP_FAILED", 0)
         self.assertIn("СРОЧНО", subject)
 
-    def test_subject_prefix_tlib(self):
+    def test_subject_prefix_domain(self):
+        from config import MAIL_SUBJECT_PREFIX
         from services.alerts.alerter import _build_body
         subject, _ = _build_body("DB_SWAP_FAILED", 0)
-        self.assertTrue(subject.startswith("[tLib]"))
+        self.assertTrue(subject.startswith(MAIL_SUBJECT_PREFIX))
+
+    def test_subject_prefix_reflects_domain(self):
+        # Префикс — это домен хостинга (MAIL_SUBJECT_PREFIX), не хардкод "[tLib]":
+        # при другом значении константы тема должна меняться вместе с ней.
+        with patch("services.alerts.alerter.MAIL_SUBJECT_PREFIX", "[tlib.ru]"):
+            from services.alerts.alerter import _build_body
+            subject, _ = _build_body("DB_SWAP_FAILED", 0)
+            self.assertTrue(subject.startswith("[tlib.ru]"))
 
 
 # ---------------------------------------------------------------------------

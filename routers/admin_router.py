@@ -1,6 +1,7 @@
-# Version 3.12 - 10.07.2026 09:45:00 GMT
+# Version 3.13 - 04.09.2026 14:25:00 GMT
 # Admin Router для TlibWebApp
 # Описание: Информационная страница администратора.
+# 3.13: тема тестового письма использует MAIL_SUBJECT_PREFIX (домен из SITE_URL) вместо "[tLib]".
 # 3.12: GET/POST /api/admin/hidden-reports — список скрытых отчётов (см. services/hidden_reports.py);
 #           POST обновляет app.state.hidden_reports сразу после сохранения настройки.
 # 3.2: auth-хелперы (_get_admin_user, _unauthorized, _forbidden) вынесены в services/auth/session_helpers.
@@ -49,6 +50,7 @@ from config import (
     UPLOAD_PAUSE_DIRECTORY,
     UPLOAD_PROCESSING_DIRECTORY,
     DIGEST_DEFAULT_SEND_TIME,
+    MAIL_SUBJECT_PREFIX,
 )
 from services.admin.status_service import collect_health, collect_status
 from services.auth.auth_db import (
@@ -524,7 +526,7 @@ async def admin_test_email(request: Request):
             return JSONResponse({"error": "Нет адресов администраторов"}, status_code=400)
 
         now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        subject = "[tLib] Тестовое письмо"
+        subject = f"{MAIL_SUBJECT_PREFIX} Тестовое письмо"
         body = (
             f"Это тестовое письмо от системы уведомлений tLib.\n\n"
             f"Отправлено: {now_str}\n"

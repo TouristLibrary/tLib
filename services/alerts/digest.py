@@ -1,4 +1,4 @@
-# Version 1.2 - 21.06.2026 13:00:00 GMT
+# Version 1.3 - 04.09.2026 14:25:00 GMT
 # Ежедневный дайджест для администраторов TlibWebApp
 # Описание: Сборка и отправка ежедневного email-дайджеста.
 #           Парсит critical.log за 24ч, читает статистику из StatsCollector,
@@ -8,6 +8,7 @@
 #           Отправляется раз в сутки в настраиваемое время (МСК).
 #           Ежечасно проверяет диск и шлёт URGENT-алерт при критической занятости.
 # 1.2: shutil.disk_usage заменён get_disk_usage из upload_io (единый helper расчёта диска).
+# 1.3: тема дайджеста использует MAIL_SUBJECT_PREFIX (домен из SITE_URL) вместо хардкода "[tLib]".
 
 import asyncio
 import logging
@@ -23,7 +24,7 @@ from config import (
     LOG_DIRECTORY, LOG_FILE_CRITICAL,
     UPLOAD_ERROR_DIRECTORY, UPLOAD_GO_DIRECTORY,
     DATA_DIRECTORY,
-    ALERT_DESCRIPTIONS, ALERT_LEVELS,
+    ALERT_DESCRIPTIONS, ALERT_LEVELS, MAIL_SUBJECT_PREFIX,
     DISK_WARN_PERCENT, DISK_CRIT_PERCENT,
     DIGEST_DEFAULT_SEND_TIME, DIGEST_TIMEZONE_OFFSET_HOURS,
     DIGEST_CHECK_INTERVAL_SECONDS, DISK_CHECK_INTERVAL_SECONDS,
@@ -263,9 +264,9 @@ def build_digest(stats_collector=None) -> tuple[str, str]:
     # Тема
     if attention_items:
         problem_count = sum(1 for i in attention_items if i.startswith("- "))
-        subject = f"[tLib] Дайджест {date_str} — {problem_count} проблем(ы) требуют внимания"
+        subject = f"{MAIL_SUBJECT_PREFIX} Дайджест {date_str} — {problem_count} проблем(ы) требуют внимания"
     else:
-        subject = f"[tLib] Дайджест {date_str} — всё в порядке"
+        subject = f"{MAIL_SUBJECT_PREFIX} Дайджест {date_str} — всё в порядке"
 
     # Тело
     sections: list[str] = [f"tLib дайджест {date_str}"]

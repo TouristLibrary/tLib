@@ -1,6 +1,7 @@
-# Version 6.8 - 03.09.2026 13:26:00 GMT
+# Version 6.9 - 04.09.2026 14:25:00 GMT
 # FastAPI приложение для просмотра архивов и поиска в базе данных
 # Описание: Главный файл приложения, инициализирует FastAPI сервер, регистрирует роутеры и middleware.
+# 6.9: тема письма о старте сервера использует MAIL_SUBJECT_PREFIX (домен из SITE_URL) вместо "[tLib]".
 # 6.8: удалён signal_handler (перехватывал SIGTERM/SIGINT и только логировал их, не завершая
 #           процесс) — из-за него uvicorn не получал сигнал, graceful shutdown (lifespan) не
 #           отрабатывал никогда, и остановка/рестарт сервиса всегда заканчивались SIGKILL по
@@ -72,6 +73,7 @@ from config import (
     STATE_DB_WATCHER_TASK, STATE_FILE_WATCHER_TASK,
     STATE_STATS_FLUSH_TASK,
     STATS_DB_PATH, STATS_FLUSH_INTERVAL, STATS_RETENTION_DAYS,
+    MAIL_SUBJECT_PREFIX,
 )
 
 # Импорт роутеров
@@ -198,7 +200,7 @@ async def lifespan(app):
     try:
         reports_count = getattr(app.state, 'reports_count', '?')
         started_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        subject = "[tLib] Сервер запущен"
+        subject = f"{MAIL_SUBJECT_PREFIX} Сервер запущен"
         body = (
             f"Сервер tLib запущен (или перезапущен).\n\n"
             f"Время: {started_at}\n"
