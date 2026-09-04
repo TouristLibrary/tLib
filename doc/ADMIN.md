@@ -322,7 +322,7 @@ PDF отдаётся напрямую из `DATA_DIRECTORY`. При открыт
 Готовые файлы хранятся в `data.cache/` с LRU-очисткой.
 
 **Настройки** (`config/cache.py` и `config/media.py`):
-- `MAX_CACHE_SIZE` — максимальный размер кеша (50 ГБ по умолчанию)
+- `MAX_CACHE_SIZE` — максимальный размер кеша (150 ГБ по умолчанию)
 - `PDF_TO_PNG_ENABLED` — конвертация PDF в PNG страницы (требует PyMuPDF)
 - `IMAGE_TO_JPG_ENABLED` — оптимизация изображений при извлечении
 

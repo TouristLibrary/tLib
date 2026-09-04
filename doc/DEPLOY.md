@@ -72,30 +72,11 @@ scp app.py logging_config.py requirements.txt \
 
 ### Шаг 3: Настройка конфигурации
 
-Отредактируйте `config/app.py` — укажите путь к архивам:
-
-```bash
-nano /opt/TlibWebApp/config/app.py
-```
-
-Замените:
-
-```python
-DATA_DIRECTORY: str = "/mnt/usb_drive/Tlib/data"
-```
-
-На:
-
-```python
-DATA_DIRECTORY: str = "data"
-```
-
-> Относительный путь `"data"` указывает на директорию (или симлинк) `data/` внутри `/opt/TlibWebApp/`.
-
-**Пути к кешу и базе данных:** по умолчанию тоже относительные и работают с симлинками из Шага 1. Если раскладка дисков отличается — скорректируйте:
+**Пути к архивам, кешу и базе данных** по умолчанию относительные и работают с симлинками из Шага 1. Если раскладка дисков отличается — скорректируйте нужную константу в указанном файле:
 
 | Константа | Файл | По умолчанию |
 |-----------|------|--------------|
+| `DATA_DIRECTORY` | `config/app.py` | `"data"` |
 | `CACHE_DIRECTORY` | `config/app.py` | `"data.cache"` |
 | `DATABASE_PATH` | `config/database.py` | `"data.db/tlib.db"` |
 
@@ -131,7 +112,7 @@ AUTH_COOKIE_SECURE=true
 
 `LOG_DEBUG_LEVEL` в `config/app.py` по умолчанию `"OFF"` и переопределяется переменной окружения `LOG_DEBUG_LEVEL` из `data.secret/.env` — так можно включить `debug.log` на тестовом стенде (`LOG_DEBUG_LEVEL=DEBUG`) без правки кода. На production `.env` эту переменную не задавайте — сработает дефолт `"OFF"`.
 
-В `js/config/constants.js` установите:
+Убедитесь, что в `js/config/constants.js` стоит:
 
 ```javascript
 export const DEBUG_MODE = false;
