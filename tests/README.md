@@ -7,7 +7,7 @@
 - Изолированный venv в корне проекта (рекомендуется):
 
 ```powershell
-# из корня проекта (C:\GoogleDrive\Cursor\Tlib)
+# из корня проекта
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt -r tests\requirements-test.txt
@@ -100,7 +100,7 @@ python -m pytest api/test_cache_png_paths.py -v
 > `pip install -r requirements.txt -r tests\requirements-test.txt`
 
 ```powershell
-# из корня проекта (C:\GoogleDrive\Cursor\Tlib)
+# из корня проекта
 python -m pytest tests/unit -v
 python -m pytest tests/integration -v   # auth/upload/admin in-process + сценарии File Watcher pipeline, без почты и сервера
 python -m pytest tests/unit tests/integration -v

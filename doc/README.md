@@ -10,7 +10,6 @@
 |----------|----------|-----------|
 | [PREDEPLOY.md](PREDEPLOY.md) | Подготовка сервера, безопасность | DevOps |
 | [DEPLOY.md](DEPLOY.md) | Установка и запуск на сервере | DevOps |
-| [DOMAIN_SWAP.md](DOMAIN_SWAP.md) | Обмен доменами turclub.com и tlib.ru | DevOps |
 | [ADMIN.md](ADMIN.md) | Ежедневные операции, мониторинг | Администратор |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Устройство системы | Разработчик |
 
