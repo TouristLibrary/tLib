@@ -86,25 +86,34 @@ scp app.py logging_config.py requirements.txt \
 MAX_CACHE_SIZE: int = 150 * 1024 * 1024 * 1024  # 150 ГБ
 ```
 
-**Admin-панель:** настройте доступ в `data.secret/.env`:
+**Admin-панель и почта:** настройте доступ в `data.secret/.env`. Каталог не создаётся автоматически до первого запуска приложения — создайте его перед редактированием:
 
 ```bash
+mkdir -p /opt/TlibWebApp/data.secret
 nano /opt/TlibWebApp/data.secret/.env
 ```
 
-Укажите email суперадмина, URL сайта и флаг безопасного cookie (если ещё не заданы):
+Укажите email суперадмина, URL сайта, SMTP-доступ и (при необходимости) флаг cookie:
 
 ```
 ROOT_ADMIN_EMAIL=admin@example.com
 SITE_URL=https://yourdomain.com
-AUTH_COOKIE_SECURE=true
+SMTP_SENDER=you@gmail.com
+SMTP_PASSWORD=пароль-приложения
+# Необязательные, показаны значения по умолчанию:
+# SMTP_SERVER=smtp.gmail.com
+# SMTP_PORT=587
+# AUTH_COOKIE_SECURE=true
+# LOG_DEBUG_LEVEL=OFF
 ```
 
 `ROOT_ADMIN_EMAIL` — всегда имеет права админа, нельзя отобрать через UI. Первый вход: откройте `https://yourdomain.com/admin`, введите email, кликните magic link из письма. Остальным админам права выдаются через секцию управления внизу страницы `/admin`.
 
 `SITE_URL` также определяет префикс `[<домен>]` в теме всех исходящих писем (алерты, дайджест, уведомления о загрузке/публикации/удалении отчётов) — см. `MAIL_SUBJECT_PREFIX` в `config/security.py` и [ALERTS.md](details/ALERTS.md#структура-письма-алерта). Если `SITE_URL` не задан, тема начинается с заглушки `[tLib-unknown-host]`.
 
-`AUTH_COOKIE_SECURE=true` — устанавливает флаг `Secure` на session-cookie, запрещая браузеру отправлять его по незашифрованному HTTP. Устанавливайте только при деплое за HTTPS (Caddy или Tailscale Funnel). Для локального HTTP-режима (`start_ubuntu_local.sh`) оставьте значение `false` (или не задавайте — по умолчанию `false`).
+**SMTP обязателен для входа:** без `SMTP_SENDER` и `SMTP_PASSWORD` magic link не отправляется, и войти в `/admin` или `/upload.html` невозможно (`services/auth/email_service.py` вернёт ошибку отправки). Для Gmail с включённой 2FA используйте [App Password](https://myaccount.google.com/apppasswords), а не обычный пароль аккаунта. Проверить SMTP-настройки перед запуском можно утилитой `tools/check_smtp_gmail.py`.
+
+`AUTH_COOKIE_SECURE` — флаг `Secure` на session-cookie, запрещающий браузеру отправлять его по незашифрованному HTTP. По умолчанию (если переменная не задана) — `true` (fail-secure): подходит для деплоя за HTTPS (Caddy или Tailscale Funnel). Для локального HTTP-режима (`start_ubuntu_local.sh`) задайте `AUTH_COOKIE_SECURE=false` явно, иначе браузер не сохранит cookie и вход не сработает.
 
 **IP-binding для администраторов:** сессия администратора привязывается к подсети (`/24` IPv4, `/64` IPv6), в которой был выполнен вход. Запрос из другой подсети возвращает 401 и требует повторного входа по magic link. Смена адреса внутри подсети провайдера сессию не сбрасывает. Ограничения: при использовании Tailscale Funnel (`start_ubuntu_tailscale_funnel.sh`) binding неэффективен, так как uvicorn запускается без `--proxy-headers` и все клиенты видны с одного адреса прокси.
 
@@ -148,7 +157,9 @@ sudo tailscale up && sudo tailscale set --operator=$USER
 > - `data.up/`, `data.new/`, `data.old/`, `data.up/10_up/`, `data.up/20_go/`, `data.up/30_processing/`, `data.up/40_error/` — при запуске приложения
 > - `data.cache/`, `data.db/` — при первом использовании
 >
-> Если симлинки на отдельные диски уже созданы (Шаг 1), скрипты корректно используют их — директории создаются на целевых дисках. Создавать их вручную **не нужно**.
+> Исключение — `data.secret/`: приложение создаёт её само при инициализации `auth.db`, но для `.env` (Шаг 3) каталог нужен раньше первого запуска, поэтому там он создаётся вручную (`mkdir -p`).
+>
+> Если симлинки на отдельные диски уже созданы (Шаг 1), скрипты корректно используют их — директории создаются на целевых дисках. Остальное создавать вручную **не нужно**.
 
 ### Шаг 5: Запуск приложения
 
