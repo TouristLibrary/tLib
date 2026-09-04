@@ -1,4 +1,4 @@
-# Version 1.0 - 12.06.2026 14:00:00 GMT
+# Version 1.1 - 04.09.2026 14:25:00 GMT
 # Модуль срочных email-алертов для администраторов TlibWebApp
 # Описание: Немедленные URGENT-уведомления с троттлингом.
 #           send_admin_alert() — отправить алерт с человеческим описанием + техдетали.
@@ -6,6 +6,7 @@
 #           Троттлинг in-memory: не более 1 письма на тип события за ALERT_THROTTLE_MINUTES.
 #           Счётчик security-событий: при >SECURITY_STORM_THRESHOLD за окно → URGENT «атака».
 #           Все SMTP-ошибки глотаются с записью в лог — алертер никогда не роняет приложение.
+# Изменения v1.1: тема письма использует MAIL_SUBJECT_PREFIX (домен из SITE_URL) вместо хардкода "[tLib]".
 
 import logging
 import smtplib
@@ -16,7 +17,7 @@ from email.mime.text import MIMEText
 from config import (
     SMTP_SERVER, SMTP_PORT, SMTP_SENDER, SMTP_PASSWORD,
     ALERT_THROTTLE_MINUTES, SECURITY_STORM_THRESHOLD,
-    ALERT_LEVELS, ALERT_DESCRIPTIONS,
+    ALERT_LEVELS, ALERT_DESCRIPTIONS, MAIL_SUBJECT_PREFIX,
 )
 from services.alerts.recipients import collect_admin_emails
 
@@ -92,7 +93,7 @@ def _build_body(event_type: str, suppressed: int, **data) -> tuple[str, str]:
     )
 
     level = ALERT_LEVELS.get(event_type, "URGENT")
-    subject = f"[tLib] {'СРОЧНО: ' if level == 'URGENT' else ''}{human[:80]}"
+    subject = f"{MAIL_SUBJECT_PREFIX} {'СРОЧНО: ' if level == 'URGENT' else ''}{human[:80]}"
 
     lines = [human, f"Что делать: {action}"]
     if suppressed:

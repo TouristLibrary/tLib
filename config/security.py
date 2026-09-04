@@ -1,4 +1,4 @@
-# Version 1.4 - 21.06.2026 13:00:00 GMT
+# Version 1.5 - 04.09.2026 14:25:00 GMT
 # Конфигурация безопасности TlibWebApp
 # Описание: CSP политики, заголовки безопасности, HTTP методы, rate limiting,
 #           паттерны детекции атак и ограничения размеров файлов.
@@ -9,6 +9,8 @@
 #                 для анти-абуз системы request-link (дневной лимит + пер-IP троттлинг).
 # Изменения v1.4: UPLOAD_READ_CHUNK_SIZE — размер чанка потоковой записи upload-файлов;
 #                 UPLOAD_DISK_RESERVE_MULTIPLIER — резерв свободного места для блокировки загрузок.
+# Изменения v1.5: MAIL_SUBJECT_PREFIX — префикс темы всех писем на основе домена из SITE_URL
+#                 (единый источник для всех хостингов, вместо хардкода "[tLib]").
 
 # ==================== RATE LIMITING ====================
 
@@ -206,6 +208,7 @@ DANGEROUS_INLINE_EXTENSIONS: set[str] = {'.html', '.htm', '.xml', '.svg'}
 # ==================== AUTH ====================
 
 import os
+from urllib.parse import urlparse
 
 # Имя cookie сессии пользователя
 AUTH_COOKIE_NAME: str = "session_token"
@@ -248,6 +251,13 @@ SMTP_PORT: int     = int(os.environ.get("SMTP_PORT", "587"))
 SMTP_SENDER: str   = os.environ.get("SMTP_SENDER", "")
 SMTP_PASSWORD: str = os.environ.get("SMTP_PASSWORD", "")
 SITE_URL: str      = os.environ.get("SITE_URL", "")
+
+# Префикс темы всех исходящих писем — домен инстанса, извлечённый из SITE_URL.
+# Один и тот же код работает для любого хостинга (прод-домен, Tailscale Funnel и т.п.).
+# "//" подставляется, если SITE_URL задан без схемы — иначе urlparse не распознает hostname.
+# Если SITE_URL не задан или домен не распознан — используется заглушка.
+_mail_host = urlparse(SITE_URL if "//" in SITE_URL else f"//{SITE_URL}").hostname or ""
+MAIL_SUBJECT_PREFIX: str = f"[{_mail_host}]" if _mail_host else "[tLib-unknown-host]"
 
 
 # ==================== ADMIN PANEL ====================
