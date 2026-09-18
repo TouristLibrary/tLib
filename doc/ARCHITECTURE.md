@@ -98,6 +98,7 @@ TlibWebApp/
 │   ├── file_service.py     # Работа с файлами
 │   ├── archive_service.py  # ZIP архивы и GPS-треки
 │   ├── json_io.py          # BOM-устойчивое чтение JSON (read_json, utf-8-sig)
+│   ├── site_notice.py      # Объявление в сайдбаре из data.secret/site_notice.json
 │   ├── http_cache_utils.py # HTTP кеш (ETag, Last-Modified, 304)
 │   ├── id_utils.py         # Нормализация ID отчётов (Шифр→5 цифр, ДопШифр→UPPERCASE)
 │   ├── security/           # Валидация путей
@@ -120,7 +121,7 @@ TlibWebApp/
 │   ├── upload.js           # Страница загрузки/модерации отчётов (upload.html)
 │   ├── config/             # Конфигурация
 │   ├── core/               # Состояние приложения
-│   ├── modules/            # Модули (search, ui, redirect, sidebarAuth, fileUtils)
+│   ├── modules/            # Модули (search, ui, redirect, sidebarAuth, siteNotice, fileUtils)
 │   └── services/           # Сетевые сервисы: authService (/api/auth/*), serverConfigService, referenceListsService, archiveService, cacheWarmService
 │
 ├── data/                   # Архивы отчетов
@@ -128,7 +129,7 @@ TlibWebApp/
 ├── data.cache/             # Кеш файлов (GPS архивы, извлеченные файлы, PNG)
 ├── data.up/                # Загрузка файлов (pipeline)
 ├── data.old/               # Бэкапы файлов и БД
-├── data.secret/            # Приватные БД (auth.db, stats.db) — вне STATIC_DIRS
+├── data.secret/            # Приватные БД (auth.db, stats.db) и site_notice.json — вне STATIC_DIRS
 └── logs/                   # Логи приложения
 ```
 

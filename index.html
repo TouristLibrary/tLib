@@ -1,5 +1,5 @@
 <!--
-  Version 2.29 - 03.09.2026 10:54:00 GMT
+  Version 2.30 - 18.09.2026 07:50:00 GMT
 
   Одностраничный интерфейс веб-приложения tLib: содержит разметку панели поиска, таблицы результатов,
   футера и встроенный SVG-спрайт иконок. Управление UI и логикой поиска выполняется через модульные
@@ -9,6 +9,7 @@
     обводка иконок унифицирована до stroke-width 2.5; убран дублирующий инлайн-стиль
   #errorMsg; убрана дублирующаяся строка в подсказке селекта ДопШифр.
   2.29: обновлена дата сборки в футере (15.07.2026 -> 03.09.2026).
+  2.30: слот #siteNotice в футере левой колонки (текст с сервера, не в git).
 -->
 <!DOCTYPE html>
 <html lang="ru" itemscope itemtype="https://schema.org/WebSite">
@@ -74,6 +75,7 @@
     <link rel="modulepreload" href="js/modules/ui/results/viewers/imageViewer.js">
     <link rel="modulepreload" href="js/modules/ui/results/viewers/trackViewer.js">
     <link rel="modulepreload" href="js/modules/sidebarAuth.js">
+    <link rel="modulepreload" href="js/modules/siteNotice.js">
 </head>
 <body>
     <div class="main-content">
@@ -220,6 +222,7 @@ TLIB и другие доп.шифры - самостоятельно загру
                     <svg class="auth-icon auth-icon-logout" aria-hidden="true"><use href="#icon-log-out"></use></svg>
                 </button>
             </div>
+            <p id="siteNotice" class="footer-site-notice" hidden></p>
             <div id="errorMsg"></div>
         </footer>
         <!-- ============================================== -->

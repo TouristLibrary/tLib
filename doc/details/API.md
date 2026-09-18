@@ -1162,10 +1162,13 @@ Health check для мониторинга состояния приложени
       "images": ["avif", "bmp", "gif", "ico", "jpg", "jpeg", "png", "svg", "webp"]
     },
     "specialValues": {"noDopShifr": "нет"},
-    "mimeTypes": {"pdf": "application/pdf", "jpg": "image/jpeg"}
+    "mimeTypes": {"pdf": "application/pdf", "jpg": "image/jpeg"},
+    "notice": {"text": "", "href": ""}
   }
 }
 ```
+
+Пустое `notice.text` — объявления в сайдбаре нет. Если задан `href` (`http://` или `https://`), вся фраза на клиенте становится одной ссылкой. Текст читается из `data.secret/site_notice.json` (не в git); см. [ADMIN.md](../ADMIN.md#объявление-в-левой-колонке).
 
 ---
 

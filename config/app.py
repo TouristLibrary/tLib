@@ -1,7 +1,9 @@
-# Version 1.3 - 03.09.2026 19:10:00 GMT
+# Version 1.4 - 18.09.2026 07:50:00 GMT
 # Конфигурация приложения TlibWebApp
 # Описание: Метаданные, сетевые настройки, пути к ресурсам, логирование,
 #           редиректы и ключи app.state.
+# 1.4: SITE_NOTICE_PATH / SITE_NOTICE_MAX_LENGTH — серверное объявление в сайдбаре
+#      (файл в data.secret/, не в git).
 # 1.3: LOG_DEBUG_LEVEL переопределяется переменной окружения (включение debug.log
 #      на тестовом стенде через data.secret/.env без правки кода).
 # 1.2: добавлены OG_IMAGE_PATH/OG_IMAGE_WIDTH/OG_IMAGE_HEIGHT (Open Graph картинка).
@@ -60,6 +62,11 @@ FAVICON_URL_PATH: str = "/favicon.ico"
 OG_IMAGE_PATH: str = "/assets/og-image.png"
 OG_IMAGE_WIDTH: int = 1200
 OG_IMAGE_HEIGHT: int = 630
+
+# Краткое объявление в футере левой колонки главной. Файл вне git и STATIC_DIRS:
+# нет файла / пустой text — слот скрыт. Рестарт не нужен (читается на каждый /api/config).
+SITE_NOTICE_PATH: str = "data.secret/site_notice.json"
+SITE_NOTICE_MAX_LENGTH: int = 300
 
 
 # ==================== ЛОГИРОВАНИЕ ====================

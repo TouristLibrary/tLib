@@ -1,4 +1,4 @@
-# Version 1.3 - 29.07.2026 19:00:00 GMT
+# Version 1.4 - 18.09.2026 07:50:00 GMT
 # Config Router для TlibWebApp
 # Описание: API endpoint для получения конфигурации сервера клиентом.
 #           GET /api/config возвращает критичные настройки из config/,
@@ -9,7 +9,9 @@
 #           - extensions.images (INLINE_EXTENSIONS, только изображения)
 #           - specialValues.noDopShifr (значение "нет" для ДопШифр)
 #           - mimeTypes (MIME_TYPES, ключи без точек)
+#           - notice (текст объявления из data.secret/site_notice.json)
 #           Устраняет дублирование конфигурации между Python и JavaScript.
+# 1.4: добавлен notice — объявление в левой колонке (файл вне git).
 # 1.3: добавлен paths.pcloudData для cloud.html.
 
 from fastapi import APIRouter
@@ -17,6 +19,7 @@ from fastapi import APIRouter
 # Импорт конфигурации
 import config
 from config import REFERENCE_FIELDS, PCLOUD_DATA_BASE_URL
+from services.site_notice import load_site_notice
 
 # Создаем роутер
 router = APIRouter(prefix="/api", tags=["config"])
@@ -34,6 +37,7 @@ async def get_client_config():
     - Расширения файлов (GPS треки, изображения)
     - Специальные значения (значение "нет" для ДопШифр)
     - MIME типы файлов (без точек в ключах)
+    - Объявление в левой колонке (notice.text / notice.href)
     
     Returns:
         dict: Конфигурация с флагом success и данными
@@ -67,7 +71,8 @@ async def get_client_config():
                 "specialValues": {
                     "noDopShifr": no_dop_shifr
                 },
-                "mimeTypes": mime_types
+                "mimeTypes": mime_types,
+                "notice": load_site_notice()
             }
         }
     except Exception as e:

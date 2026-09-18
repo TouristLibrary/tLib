@@ -1,5 +1,5 @@
 /*
-   Version 2.31 - 15.07.2026 16:50:00 GMT
+   Version 2.33 - 18.09.2026 08:05:00 GMT
 
    Универсальные стили для адаптивного интерфейса поиска по архиву турклуба.
    Определяет общую типографику, сетку страницы, стили формы/таблицы и оформление
@@ -23,6 +23,8 @@
    content-box (универсальный * box-sizing до них не доходил), поэтому width:100%
    не включал padding+border (+18px). Добавлен явный box-sizing: border-box
    контролам формы; select уже был border-box и вставал по грани.
+   v2.32: .footer-site-notice — объявление под кнопками входа/публикации.
+   v2.33: ссылка объявления серая как текст футера, синий убран; подчёркивание только hover.
 */
 
 /* ------------------- Сброс и базовые настройки ------------------- */
@@ -715,6 +717,30 @@ th::before {
 .footer-auth-btn .auth-icon-logout { display: none; }
 .footer-auth-btn.is-authenticated .auth-icon-login { display: none; }
 .footer-auth-btn.is-authenticated .auth-icon-logout { display: block; }
+
+/* Объявление под кнопками входа/публикации (текст с сервера) */
+.footer-site-notice {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--color-border);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+    line-height: 1.4;
+    text-wrap: pretty;
+}
+
+.footer-site-notice[hidden] {
+    display: none;
+}
+
+.footer-site-notice a {
+    color: inherit;
+    text-decoration: none;
+}
+
+.footer-site-notice a:hover {
+    text-decoration: underline;
+}
 
 /* Стили для ссылок на отчеты */
 .report-link {

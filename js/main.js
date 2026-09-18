@@ -1,4 +1,4 @@
-// Version 2.13 - 15.06.2026 12:00:00 GMT
+// Version 2.14 - 18.09.2026 07:50:00 GMT
 // Главный файл приложения TlibWebApp
 // Описание: Инициализирует приложение при загрузке DOM и координирует работу модулей (UI, поиск, архивы, редиректы).
 //           Управляет жизненным циклом через класс TlibWebApp: загрузка конфигурации сервера, инициализация UI,
@@ -11,6 +11,7 @@
 //           При загрузке страницы в футер выводится общее количество отчетов в базе данных.
 //           Справочники загружаются в фоне через ReferenceListsService с проверкой версии (без блокировки UI).
 //           Конфигурация загружается с сервера через /api/config при инициализации.
+//           После конфига заполняется слот объявления в футере левой колонки.
 //           При ошибке инициализации показывается кнопка "Попробовать снова" вместо мёртвой страницы.
 
 // ВАЖНО: При изменении импортов (прямых или транзитивных) обновите
@@ -25,6 +26,7 @@ import { ReferenceListsService } from './services/referenceListsService.js';
 import { RedirectManager, URLRedirectHandler, buildFormDataFromParams } from './modules/redirect.js';
 import { loadServerConfig } from './services/serverConfigService.js';
 import { initSidebarAuth } from './modules/sidebarAuth.js';
+import { initSiteNotice } from './modules/siteNotice.js';
 import { fetchApiJson } from './utils/fetchUtils.js';
 
 // Отключение debug-логов в production
@@ -67,6 +69,7 @@ class TlibWebApp {
             console.log('Загрузка конфигурации с сервера...');
             await loadServerConfig();
             console.log('Конфигурация успешно загружена');
+            initSiteNotice();
 
             // Скрываем loading-плейсхолдер сразу после успешного получения конфига
             this._hideAppLoader();
