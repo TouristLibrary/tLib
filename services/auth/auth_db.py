@@ -1,4 +1,4 @@
-# Version 1.11 - 24.06.2026 23:00:00 GMT
+# Version 1.12 - 20.09.2026 09:05:00 GMT
 # Auth DB layer для TlibWebApp
 # Описание: SQLite-слой авторизации. Таблицы: users, magic_links, sessions, app_settings.
 #           Все токены хранятся как SHA-256 хеши — raw токен не попадает в БД.
@@ -21,6 +21,8 @@
 #           delete_user_sessions() принимает exclude_token_hash для исключения текущей сессии;
 #           удалены get_all_sessions() и delete_session_by_hash() — не используются после рефакторинга панели 7.
 # Изменения v1.11: возвращена get_all_sessions() — ошибочно удалена в v1.10, используется tools/manage_users.py.
+# Изменения v1.12: смена подсети у админ-сессии больше не сбрасывает сессию (было 401) —
+#           пишется security-событие ADMIN_IP_CHANGE и обновляется sessions.ip.
 
 import hashlib
 import ipaddress
@@ -39,6 +41,8 @@ def _now_iso() -> str:
 
 def _same_network(ip_a: str, ip_b: str) -> bool:
     """True, если оба IP в одной подсети (/24 IPv4, /64 IPv6).
+    Используется для детекции смены сети у админ-сессии (запись в security-лог),
+    а не для запрета доступа.
     Пустые/непарсящиеся значения (например 'unknown') сравниваются строго."""
     if not ip_a or not ip_b:
         return ip_a == ip_b
@@ -347,9 +351,12 @@ def create_session(user_id: int, ip: str = "") -> str:
 def get_user_by_session(token: str, current_ip: str | None = None) -> dict | None:
     """Проверяет сессию по cookie-токену, возвращает данные пользователя или None.
 
-    Для администраторов дополнительно проверяет, что запрос пришёл из той же
-    подсети (/24 IPv4, /64 IPv6), что и при создании сессии. При несовпадении
-    возвращает None (форсит повторный вход). Обычных пользователей не затрагивает.
+    Смена подсети (/24 IPv4, /64 IPv6) у администратора сессию не сбрасывает:
+    смена сети — обычное дело (мобильный интернет, VPN, поездки), а IP-привязка
+    не защищает от угона cookie в той же сети. Событие пишется в security-лог
+    (ADMIN_IP_CHANGE), после чего IP сессии обновляется — чтобы одна смена сети
+    давала одну запись, а не запись на каждый запрос. Обычных пользователей
+    проверка не затрагивает.
     """
     with _connect() as conn:
         row = conn.execute(
@@ -363,7 +370,16 @@ def get_user_by_session(token: str, current_ip: str | None = None) -> dict | Non
         return None
     is_admin = (row["role"] == "admin") or bool(ROOT_ADMIN_EMAIL and row["email"] == ROOT_ADMIN_EMAIL)
     if is_admin and current_ip is not None and not _same_network(row["ip"] or "", current_ip):
-        return None
+        # Импорт локальный: logging_config при инициализации подтягивает services.alerts,
+        # а те — этот модуль; импорт на уровне файла оставил бы logging_config
+        # без CriticalMailHandler (почтовые алерты на CRITICAL).
+        from logging_config import security_logger
+        security_logger.log_admin_ip_change(row["email"], row["ip"] or "", current_ip)
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE sessions SET ip = ? WHERE token_hash = ?",
+                (current_ip, _hash(token))
+            )
     return {"id": row["id"], "email": row["email"], "name": row["name"], "role": row["role"]}
 
 

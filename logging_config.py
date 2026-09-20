@@ -1,4 +1,4 @@
-# Version 1.7 - 21.06.2026 12:15:00 GMT
+# Version 1.8 - 20.09.2026 09:05:00 GMT
 # Unified Logging System для TlibWebApp
 # Описание: Центральная система логирования с гибридным форматом, читаемым человеком и ИИ. Формат логов:
 #           [timestamp] LEVEL [req_id] function:line | key=value msg="quoted text".
@@ -12,6 +12,8 @@
 # Изменения v1.6: добавлен SecurityLogger.log_email_quota_exceeded — корректная метка
 #                 event_type=EMAIL_QUOTA для исчерпания дневного лимита request-link.
 # Изменения v1.7: уточнён docstring log_email_quota_exceeded (убрана неточность про дайджест).
+# Изменения v1.8: добавлен SecurityLogger.log_admin_ip_change — админ-сессия из другой подсети
+#                 (event_type=ADMIN_IP_CHANGE, threat_level=LOW); сессия при этом не сбрасывается.
 
 import os
 import re
@@ -399,6 +401,25 @@ class SecurityLogger:
             ip=ip,
             daily_cap=cap,
             threat_level="MEDIUM"
+        )
+
+    def log_admin_ip_change(self, email: str, session_ip: str, current_ip: str):
+        """
+        Логирует использование админ-сессии из другой подсети (/24 IPv4, /64 IPv6).
+
+        Сессия при этом не сбрасывается: смена сети у администратора — обычное
+        дело, а IP не является фактором аутентификации. Запись нужна, чтобы
+        администратор заметил чужое использование украденной cookie и мог
+        выйти со всех устройств.
+        Уровень LOW намеренно: IP самого администратора не должен попадать
+        в «Топ IP» панели безопасности (там учитываются HIGH и MEDIUM).
+        """
+        log_security_event(
+            "ADMIN_IP_CHANGE",
+            ip=current_ip,
+            email=email,
+            session_ip=session_ip,
+            threat_level="LOW"
         )
 
 

@@ -184,7 +184,7 @@ CSP_POLICY = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; ..."
 > ([start_ubuntu_caddy.sh](../../start_ubuntu_caddy.sh)), поэтому `request.client.host` = реальный
 > IP клиента (подтверждено на проде — в `app.log` разнообразные публичные адреса). Caddy по
 > умолчанию игнорирует поддельный `X-Forwarded-For` от недоверенного источника. Поэтому пер-IP
-> троттлинг request-link, общий rate-limit, security-логи и привязка админ-сессии к подсети
+> троттлинг request-link, общий rate-limit, security-логи и детекция смены подсети админ-сессии
 > работают по настоящему IP. На тест-сервере через Tailscale Funnel реальный IP приходит на
 > TCP-уровне.
 
@@ -207,7 +207,7 @@ ROOT_ADMIN_EMAIL=admin@example.com
 - `GET /api/admin/health-brief` — публичный, возвращает только `{overall: "healthy"|"degraded"|"unhealthy"}`
 - `GET /api/admin/status`, `GET /api/admin/admins`, `POST /api/admin/grant`, `POST /api/admin/revoke` — только для авторизованных админов (401 без сессии)
 - `POST /api/admin/revoke` отказывает в отборе прав у `ROOT_ADMIN_EMAIL`
-- Для admin-сессий `get_user_by_session()` дополнительно проверяет совпадение подсети IP (/24 IPv4, /64 IPv6)
+- Для admin-сессий `get_user_by_session()` сравнивает подсеть IP (/24 IPv4, /64 IPv6) с той, где был выполнен вход. Несовпадение **не сбрасывает сессию**: пишется `ADMIN_IP_CHANGE` в `critical.log` (threat_level LOW, в дайджест и в панель «Безопасность»), после чего `sessions.ip` обновляется — одна смена сети даёт одну запись
 
 ---
 
@@ -279,6 +279,7 @@ grep "event_type=" logs/critical.log | sed 's/.*event_type=\([A-Z_]*\).*/\1/' | 
 | RATE_LIMIT_EXCEEDED | Превышение лимита запросов | MEDIUM |
 | ARCHIVE_SIZE_EXCEEDED | Запрос большого архива | MEDIUM |
 | INVALID_REQUEST | Невалидный запрос | LOW |
+| ADMIN_IP_CHANGE | Админ-сессия из другой подсети | LOW |
 
 ---
 

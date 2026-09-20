@@ -1,4 +1,4 @@
-// Version 3.16 - 24.06.2026
+// Version 3.17 - 20.09.2026
 // Admin Dashboard JS для TlibWebApp
 // Описание: Аутентификация через Magic Link + цифровой код + управление правами администраторов.
 //           Неавторизованные видят только хедер с формой входа и общим статусом.
@@ -21,6 +21,7 @@
 //   (для своей строки — все, кроме текущей); is_root/is_self делают «Заблокировать» серой;
 //   «без входов» спрятаны под <details>.
 // Изменения v3.16: убран висячий вызов loadSessions() в _userAction() (функция удалена в v3.15, вызов не удалили).
+// Изменения v3.17: плитка Admin IP Change в renderSecurity (event_type=ADMIN_IP_CHANGE, level=low).
 
 import { getCurrentUser, requestLink, verifyCode as authVerifyCode, logout as authLogout } from './services/authService.js';
 import { escapeHtml } from './utils/sanitize.js';
@@ -257,6 +258,7 @@ function renderSecurity(s) {
     { key: 'ARCHIVE_SIZE_EXCEEDED',  label: 'Archive Size',    level: 'medium' },
     { key: 'EMAIL_QUOTA',            label: 'Email Quota',     level: 'medium' },
     { key: 'INVALID_REQUEST',        label: 'Invalid Request', level: 'low' },
+    { key: 'ADMIN_IP_CHANGE',        label: 'Admin IP Change', level: 'low' },
   ];
 
   const by_type = s.by_type || {};

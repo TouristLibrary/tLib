@@ -76,6 +76,7 @@ daily_digest_task (фон) → parse_critical_log()
 | `DISK_WARN` | Занятость диска > `DISK_WARN_PERCENT` (75%) |
 | `STALE_QUEUE_FILES` | Файлы в 20_go старше суток |
 | `INVALID_REQUEST` | Некорректные запросы |
+| `ADMIN_IP_CHANGE` | Админ-сессия использовалась из другой подсети |
 
 ---
 

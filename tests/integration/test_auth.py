@@ -1,4 +1,4 @@
-# Version 1.3 - 21.06.2026
+# Version 1.4 - 20.09.2026
 # Integration tests: auth endpoints + auth_db unit-блок
 # Описание: In-process тесты для /api/auth/request-link, /api/auth/verify-code,
 #           /auth/verify, /api/auth/logout, /api/auth/me, а также unit-тесты
@@ -11,6 +11,8 @@
 #           метода security_logger.log_email_quota_exceeded.
 # Изменения v1.3: test_send_admin_alert_email_quota_actually_fires — добавлен try/finally
 #           для очистки alerter._throttle["EMAIL_QUOTA"] после теста (изоляция состояния).
+# Изменения v1.4: TestAdminIpChange — смена подсети у админ-сессии не сбрасывает сессию,
+#           а пишет ADMIN_IP_CHANGE в security-лог и обновляет sessions.ip.
 
 from __future__ import annotations
 
@@ -331,6 +333,74 @@ class TestSameNetwork:
 
     def test_garbage_strings_differ(self):
         assert self._fn("testclient", "otherclient") is False
+
+
+class TestAdminIpChange:
+    """Смена подсети у админ-сессии: сессия жива, событие в security-лог, ip обновлён."""
+
+    @pytest.fixture()
+    def logged_calls(self, monkeypatch) -> list:
+        """Подменяет security_logger, собирая вызовы log_admin_ip_change.
+
+        Патчим атрибут logging_config: auth_db импортирует логгер локально,
+        уже внутри функции (защита от цикла импортов).
+        """
+        import logging_config as lc
+
+        calls: list = []
+
+        class FakeLogger:
+            def log_admin_ip_change(self, email, session_ip, current_ip):
+                calls.append((email, session_ip, current_ip))
+
+        monkeypatch.setattr(lc, "security_logger", FakeLogger())
+        return calls
+
+    def _session_ip(self, auth_db_path: str, token: str) -> str:
+        conn = sqlite3.connect(auth_db_path)
+        row = conn.execute(
+            "SELECT ip FROM sessions WHERE token_hash=?", (adb.hash_token(token),)
+        ).fetchone()
+        conn.close()
+        return row[0]
+
+    def _make_admin_session(self, email: str, ip: str) -> str:
+        adb.find_or_create_user(email, "Test")
+        adb.set_user_role(email, "admin")
+        user = adb.get_user_by_email(email)
+        return adb.create_session(user["id"], ip=ip)
+
+    def test_admin_other_subnet_keeps_session_and_logs(self, auth_db_path, logged_calls):
+        email = "ipchange_admin@example.com"
+        token = self._make_admin_session(email, "10.0.0.1")
+
+        user = adb.get_user_by_session(token, "10.0.1.1")
+
+        assert user is not None, "Смена подсети не должна сбрасывать админ-сессию"
+        assert user["email"] == email
+        assert logged_calls == [(email, "10.0.0.1", "10.0.1.1")]
+        assert self._session_ip(auth_db_path, token) == "10.0.1.1"
+
+    def test_repeated_request_from_same_new_subnet_logs_once(self, auth_db_path, logged_calls):
+        """IP сессии обновлён — повторные запросы из той же сети событие не пишут."""
+        email = "ipchange_once@example.com"
+        token = self._make_admin_session(email, "10.0.0.1")
+
+        adb.get_user_by_session(token, "10.0.1.1")
+        adb.get_user_by_session(token, "10.0.1.1")
+        adb.get_user_by_session(token, "10.0.1.7")  # та же /24 — не смена сети
+
+        assert len(logged_calls) == 1, f"Ожидалась одна запись, получено: {logged_calls}"
+
+    def test_regular_user_subnet_change_not_logged(self, auth_db_path, logged_calls):
+        email = "ipchange_user@example.com"
+        adb.find_or_create_user(email, "Test")
+        user = adb.get_user_by_email(email)
+        token = adb.create_session(user["id"], ip="10.0.0.1")
+
+        assert adb.get_user_by_session(token, "10.0.1.1") is not None
+        assert logged_calls == []
+        assert self._session_ip(auth_db_path, token) == "10.0.0.1"
 
 
 class TestVerifyMagicCodeUnit:
