@@ -1050,6 +1050,8 @@ JSON-данные для панели администратора. Требуе
 
 ```
 User-agent: *
+Allow: /api/pdf/
+Allow: /data/*.pdf$
 Disallow: /data/
 Disallow: /data.db/
 Disallow: /api/
@@ -1060,15 +1062,21 @@ Sitemap: https://tlib.ru/sitemap.xml
 
 | Путь | Правило |
 |------|---------|
-| `/data/` | Disallow — PDF/ZIP не индексируются (посадочная — карточка отчёта) |
+| `/api/pdf/`, `/data/*.pdf` | Allow — обход разрешён, чтобы краулер прочитал `X-Robots-Tag: noindex` |
+| `/data/` | Disallow — ZIP-архивы и прочие файлы не обходятся |
 | `/data.db/` | Disallow — каталог и БД не индексируются |
 | `/api/` | Disallow |
 | `/health` | Disallow |
 | Остальное | разрешено по умолчанию |
 
-Служебные страницы (`/oldscan.html`, `/cloud.html`, `/png-viewer`, `/login.html`, `/upload.html`)
+Порядок строк значения не имеет: и Google, и Яндекс выбирают правило по длине пути,
+поэтому `Allow` перекрывает `Disallow` для PDF.
+
+Служебные страницы (`/oldscan.html`, `/cloud.html`, `/png-viewer`, `/login.html`, `/upload.html`),
+а также PDF (`/api/pdf/*`, `/data/*.pdf`) и постраничные PNG (`/cache/*`)
 закрыты через `X-Robots-Tag: noindex` в ответе, а не через `Disallow` —
-чтобы краулер мог прочитать сам заголовок.
+чтобы краулер мог прочитать сам заголовок. `Disallow` не удаляет URL из индекса:
+заблокированный файл остаётся в выдаче «голой» ссылкой без заголовка и сниппета.
 
 ---
 

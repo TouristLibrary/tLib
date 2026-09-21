@@ -1,4 +1,4 @@
-# Version 1.6 - 16.06.2026 21:00:00 GMT
+# Version 1.7 - 21.09.2026 19:45:00 GMT
 # Middleware для добавления заголовков безопасности
 # Описание: Добавляет HTTP заголовки безопасности ко всем ответам сервера: X-Content-Type-Options (nosniff),
 #           X-Frame-Options (SAMEORIGIN), X-XSS-Protection: 0 (легаси-аудитор отключён, защита через CSP),
@@ -8,8 +8,11 @@
 #           хранить файл и делать быстрый revalidate (304) вместо повторной загрузки, при этом обновления «по месту» подхватывались.
 #           Для JS/CSS файлов (/js/*, /css/*) добавляет Cache-Control: no-cache, чтобы браузер всегда проверял актуальность
 #           через conditional request (304), не прибегая к heuristic caching.
-#           SEO: X-Robots-Tag: noindex, nofollow для /data/*, /data.db/* (файлы доступны для скачивания,
-#           но не индексируются) и для служебных HTML-страниц (NOINDEX_PAGES, включая /admin).
+#           SEO: X-Robots-Tag: noindex, nofollow для /data/*, /data.db/*, /cache/*, /api/pdf/*
+#           (файлы доступны для скачивания и просмотра, но не индексируются)
+#           и для служебных HTML-страниц (NOINDEX_PAGES, включая /admin).
+#           1.7: noindex распространён на /api/pdf/* и /cache/* — PDF и постраничные PNG
+#                не должны попадать в выдачу, посадочная страница отчёта это /?<Шифр>.
 #           1.6: добавлен /admin в NOINDEX_PAGES.
 #           Все заголовки настраиваются через config.py (SECURITY_HEADERS, CSP_POLICY, CACHE_CONTROL_HTML, CACHE_CONTROL_STATIC).
 
@@ -51,10 +54,14 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         path = str(request.url.path or "")
 
         # SEO: блокировка индексации для файловых директорий и служебных страниц.
-        # X-Robots-Tag здесь — для StaticFiles-маршрутов (/data/, /data.db/) и
-        # служебных HTML-страниц (NOINDEX_PAGES). Для root() noindex при фильтрах
-        # выставляется непосредственно в роутере.
+        # X-Robots-Tag здесь — для StaticFiles-маршрутов (/data/, /data.db/, /cache/),
+        # endpoint'а просмотра PDF (/api/pdf/) и служебных HTML-страниц (NOINDEX_PAGES).
+        # Для root() noindex при фильтрах выставляется непосредственно в роутере.
+        # Посадочная страница отчёта — короткая ссылка /?<Шифр>, сами файлы в выдаче не нужны.
+        # Заголовок выставляется здесь, а не в pdf_router: так он попадает и на ранний
+        # ответ 304 Not Modified, который роутер возвращает в обход общей ветки.
         if (path.startswith("/data/") or path.startswith("/data.db/")
+                or path.startswith("/api/pdf/") or path.startswith(f"{CACHE_URL_PATH}/")
                 or path in _NOINDEX_PAGES):
             response.headers["X-Robots-Tag"] = "noindex, nofollow"
 

@@ -1,4 +1,4 @@
-# Version 1.4 - 16.06.2026 21:00:00 GMT
+# Version 1.5 - 21.09.2026 19:45:00 GMT
 # Static Router для TlibWebApp
 # Описание: Роутер для обработки статических страниц, серверных редиректов и таблицы редиректов.
 #           GET / — SEO-aware рендер: для компактных URL отчётов (/?123, /?123-ТССР) возвращает
@@ -18,6 +18,8 @@
 #           Поддерживает fallback для favicon.ico (assets/favicon.ico → favicon.ico).
 #           1.4: about.html через HTMLResponse (render_about_html); robots.txt + Clean-param;
 #                защитные legacy-маршруты /doc.aspx (регистровые варианты) + /default.aspx.
+#           1.5: robots.txt разрешает обход PDF (Allow: /api/pdf/, /data/*.pdf$) — краулер должен
+#                скачать файл, чтобы увидеть X-Robots-Tag: noindex и убрать его из индекса.
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -145,6 +147,11 @@ async def robots_txt():
     base = (SITE_URL or "").rstrip("/")
     content = (
         "User-agent: *\n"
+        # PDF открыты для обхода намеренно: краулер должен скачать файл, чтобы
+        # прочитать X-Robots-Tag: noindex и убрать «голые» ссылки из индекса.
+        # Disallow этого не даёт — он лишь запрещает скачивание, но не удаляет URL.
+        "Allow: /api/pdf/\n"
+        "Allow: /data/*.pdf$\n"
         "Disallow: /data/\n"
         "Disallow: /data.db/\n"
         "Disallow: /api/\n"

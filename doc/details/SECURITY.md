@@ -115,7 +115,12 @@ CSP_POLICY = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; ..."
 
 `SecurityHeadersMiddleware` добавляет `X-Robots-Tag: noindex, nofollow` для:
 - `/data/*` и `/data.db/*` — файлы остаются доступными для скачивания, но не индексируются поисковиками;
+- `/api/pdf/*` — просмотр PDF; заголовок выставляется в middleware, а не в роутере, чтобы попасть в том числе на ранний ответ `304 Not Modified`;
+- `/cache/*` — постраничные PNG из PNG-вьюера;
 - служебных HTML-страниц (`/oldscan.html`, `/cloud.html`, `/png-viewer`, `/login.html`, `/upload.html`) — страницы доступны публично, но закрыты от индексации через заголовок (не через `Disallow` в robots.txt, чтобы краулер мог прочитать сам заголовок).
+
+Для PDF в robots.txt стоит `Allow` (`/api/pdf/`, `/data/*.pdf$`) — без обхода краулер не увидит заголовок,
+а `Disallow` из индекса не удаляет: URL остаётся в выдаче «голой» ссылкой. Посадочная страница отчёта — `/?<Шифр>`.
 
 Для `/` с фильтрами (`/?Шифр=...`) `noindex` выставляется непосредственно в `routers/static_router.py::root()`.
 
