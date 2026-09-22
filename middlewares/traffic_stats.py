@@ -1,4 +1,4 @@
-# Version 1.2 - 30.03.2026
+# Version 1.3 - 22.09.2026 13:57:00 GMT
 # Traffic Stats Middleware для TlibWebApp
 # Описание: Сбор статистики посещений сайта. Классифицирует запросы по категориям
 #           (search, report, download, api, page), считает уникальные IP по дням,
@@ -6,6 +6,7 @@
 #           Хранит in-memory счётчики, сбрасывает в stats.db каждые
 #           STATS_FLUSH_INTERVAL секунд. Данные старше STATS_RETENTION_DAYS
 #           удаляются автоматически. Статические ресурсы (JS/CSS/assets) не учитываются.
+#           1.3: HEAD не пишется в статистику — краулеры не раздувают просмотры и уникальные IP.
 
 import asyncio
 import re
@@ -493,6 +494,7 @@ class TrafficStatsMiddleware(BaseHTTPMiddleware):
     """
     Middleware для сбора статистики посещений.
     Записывает каждый запрос в StatsCollector после получения ответа.
+    HEAD пропускается: краулеры не должны раздувать просмотры и уникальные IP.
     StatsCollector должен быть инициализирован и сохранён в app.state.stats_collector.
     """
 
@@ -503,7 +505,7 @@ class TrafficStatsMiddleware(BaseHTTPMiddleware):
             collector: StatsCollector | None = getattr(
                 request.app.state, "stats_collector", None
             )
-            if collector is not None:
+            if collector is not None and request.method != "HEAD":
                 ip = request.client.host if request.client else "unknown"
                 collector.record(
                     path=request.url.path + ('?' + request.url.query if request.url.query else ''),

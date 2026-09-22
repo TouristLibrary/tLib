@@ -18,8 +18,8 @@
 | GET | /api/cache/{archive_name}/contents | Список файлов из кеша |
 | POST | /api/cache/{archive_name}/resolve | Resolve статуса кешированного файла |
 | GET | /api/png/{archive_name}/{png_dirname}/pages | Список PNG страниц |
-| GET | /robots.txt | robots.txt с Disallow-правилами и Sitemap |
-| GET | /sitemap.xml | Динамический XML-сайтмап (~12k URL отчётов) |
+| GET, HEAD | /robots.txt | robots.txt с Disallow-правилами и Sitemap |
+| GET, HEAD | /sitemap.xml | Динамический XML-сайтмап (~12k URL отчётов) |
 | GET | /api/dopshifr-list | Список значений ДопШифр |
 | GET | /api/raion-obshiy-list | Список значений РайонОбщий |
 | GET | /api/tip-list | Список значений Тип |
@@ -51,7 +51,7 @@
 | GET | /api/admin/status | JSON-данные для панели администратора |
 | GET | /api/admin/hidden-reports | Список скрытых отчётов (текст для textarea) (админ) |
 | POST | /api/admin/hidden-reports | Сохранить список скрытых отчётов (админ) |
-| GET | /health | Health check |
+| GET, HEAD | /health | Health check |
 
 ---
 
@@ -1041,7 +1041,7 @@ JSON-данные для панели администратора. Требуе
 
 ---
 
-## GET /robots.txt
+## GET, HEAD /robots.txt
 
 Файл robots.txt с правилами индексации для поисковых краулеров.
 Генерируется динамически (для подстановки актуального `SITE_URL` в Sitemap).
@@ -1080,7 +1080,7 @@ Sitemap: https://tlib.ru/sitemap.xml
 
 ---
 
-## GET /sitemap.xml
+## GET, HEAD /sitemap.xml
 
 Динамический XML-сайтмап всех индексируемых страниц.
 
@@ -1102,7 +1102,7 @@ Sitemap: https://tlib.ru/sitemap.xml
 
 ---
 
-## GET / (SEO-поведение)
+## GET, HEAD / (SEO-поведение)
 
 Корневой маршрут, обрабатываемый `static_router.py::root()`:
 
@@ -1121,13 +1121,13 @@ JS перезаписывает `#results` как обычно, поведени
 
 ---
 
-## GET /index.html
+## GET, HEAD /index.html
 
 **301 редирект на `/`** — устранение дублирующего URL.
 
 ---
 
-## GET /health
+## GET, HEAD /health
 
 Health check для мониторинга состояния приложения.
 

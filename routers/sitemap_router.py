@@ -1,4 +1,4 @@
-# Version 1.2 - 16.06.2026 21:00:00 GMT
+# Version 1.3 - 22.09.2026 13:57:00 GMT
 # Sitemap Router для TlibWebApp
 # Описание: Генерирует sitemap.xml с URL главной, about.html и всех отчётов.
 #           URL отчётов строятся через build_canonical_query (services/seo/report_seo.py):
@@ -10,6 +10,7 @@
 #             если поле пустое или непарсимое — lastmod пропускается (guard).
 # 1.1: подключение к БД переведено на open_tlib_db() (read-only).
 # 1.2: добавлен <lastmod> из ДатаВремяЗагрузки.
+# 1.3: /sitemap.xml принимает HEAD — краулеры не получают 405.
 
 import urllib.parse
 from xml.sax.saxutils import escape as xml_escape
@@ -28,7 +29,7 @@ _sitemap_cache: str | None = None
 _sitemap_cache_version: str | None = None
 
 
-@router.get("/sitemap.xml")
+@router.api_route("/sitemap.xml", methods=["GET", "HEAD"])
 async def sitemap_xml(request: Request):
     """
     Генерирует sitemap.xml.

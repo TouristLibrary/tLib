@@ -134,6 +134,8 @@ CSP_POLICY = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; ..."
 
 **Заблокированные:** PUT, DELETE, PATCH, TRACE, CONNECT
 
+Фильтр пропускает HEAD на любой путь, но FastAPI не добавляет HEAD к маршрутам, объявленным только на GET. HEAD обслуживается роутингом на публичных точках входа (`/`, `/index.html`, `/about.html`, `/robots.txt`, `/sitemap.xml`, `/health`) и на статике (`StaticFiles`: `/js/`, `/data/`, `/cache/`). На остальных GET-маршрутах ответ 405.
+
 ---
 
 ### 6. Information Disclosure Prevention

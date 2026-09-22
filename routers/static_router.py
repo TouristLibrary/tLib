@@ -1,4 +1,4 @@
-# Version 1.7 - 22.09.2026 11:05:00 GMT
+# Version 1.8 - 22.09.2026 13:57:00 GMT
 # Static Router для TlibWebApp
 # Описание: Роутер для обработки статических страниц, серверных редиректов и таблицы редиректов.
 #           GET / — SEO-aware рендер: для компактных URL отчётов (/?123, /?123-ТССР) возвращает
@@ -26,6 +26,8 @@
 #                на тот же URL без них — компактный адрес отчёта снова разбирается.
 #           1.7: хвостовой «=» у компактного шифра (3725= от Яндекса) тоже снимается 301;
 #                legacy ?id= обрабатывается до очистки меток — один переход, не два.
+#           1.8: /, /index.html, /about.html и /robots.txt принимают HEAD — краулеры
+#                (curl -I) больше не получают 405 от FastAPI, который HEAD к GET не добавляет.
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -186,7 +188,7 @@ def _resolve_legacy_redirect(request: Request, source: str) -> "RedirectResponse
     )
 
 
-@router.get("/robots.txt")
+@router.api_route("/robots.txt", methods=["GET", "HEAD"])
 async def robots_txt():
     """Отдаёт robots.txt с актуальным Sitemap и Clean-param из SITE_URL/ROBOTS_CLEAN_PARAMS."""
     base = (SITE_URL or "").rstrip("/")
@@ -207,7 +209,7 @@ async def robots_txt():
     return Response(content=content, media_type="text/plain")
 
 
-@router.get("/")
+@router.api_route("/", methods=["GET", "HEAD"])
 async def root(request: Request):
     """
     SEO-aware обработчик корня.
@@ -247,13 +249,13 @@ async def root(request: Request):
     return response
 
 
-@router.get("/index.html")
+@router.api_route("/index.html", methods=["GET", "HEAD"])
 async def index():
     """301 редирект на / — устраняет дубликат главной страницы."""
     return RedirectResponse(url="/", status_code=301)
 
 
-@router.get("/about.html")
+@router.api_route("/about.html", methods=["GET", "HEAD"])
 async def about():
     """Возвращает about.html с canonical + Open Graph (рендер через SEO_HEAD зону)."""
     return HTMLResponse(content=render_about_html(), media_type="text/html")
