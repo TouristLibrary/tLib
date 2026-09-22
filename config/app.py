@@ -1,7 +1,9 @@
-# Version 1.4 - 18.09.2026 07:50:00 GMT
+# Version 1.6 - 22.09.2026 11:05:00 GMT
 # Конфигурация приложения TlibWebApp
 # Описание: Метаданные, сетевые настройки, пути к ресурсам, логирование,
 #           редиректы и ключи app.state.
+# 1.6: комментарий ROBOTS_CLEAN_PARAMS — список ещё и вырезается из живых URL.
+# 1.5: ysclid в ROBOTS_CLEAN_PARAMS — Яндекс дописывает его к ссылке из выдачи.
 # 1.4: SITE_NOTICE_PATH / SITE_NOTICE_MAX_LENGTH — серверное объявление в сайдбаре
 #      (файл в data.secret/, не в git).
 # 1.3: LOG_DEBUG_LEVEL переопределяется переменной окружения (включение debug.log
@@ -127,11 +129,13 @@ STATIC_REDIRECT_STATUS_CODE: int = 301
 # Используется для редиректов с маппингом по таблице redirect_table
 LEGACY_REDIRECT_STATUS_CODE: int = 301
 
-# Clean-param директива для robots.txt — Яндекс использует её для склейки дублей,
-# возникающих из-за UTM-меток и параметров аналитики в URL
+# Метки, которые не делают страницу другой.
+# 1) Clean-param в robots.txt — Яндекс склеивает дубли в индексе.
+# 2) GET / вырезает их из живого URL редиректом 301 (static_router._strip_tracking_query).
+# Имя, добавленное сюда ради индекса, пропадёт и из рабочих ссылок.
 ROBOTS_CLEAN_PARAMS: str = (
     "utm_source&utm_medium&utm_campaign&utm_term&utm_content"
-    "&utm_expid&openstat&yclid&from&gclid"
+    "&utm_expid&openstat&yclid&ysclid&from&gclid"
 )
 
 

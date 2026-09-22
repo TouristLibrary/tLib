@@ -1113,6 +1113,7 @@ Sitemap: https://tlib.ru/sitemap.xml
 | `GET /?123` и отчёт **не найден** | Шаблон главной + `X-Robots-Tag: noindex, nofollow` (soft-404, статус 200) |
 | `GET /?Шифр=...&Тип=...` (фильтры) | Шаблон главной + `X-Robots-Tag: noindex, nofollow` |
 | `GET /?id=...` (legacy) | `RedirectResponse` по таблице редиректов |
+| `GET /?123&ysclid=…`, `GET /?123=` (метки из Clean-param и хвостовой `=` у шифра) | 301 на тот же компактный URL без них |
 
 Видимый блок маршрута зеркалит разметку JS-карточки (`renderSingleResultFormatted`):
 доступен сразу в HTML — для краулеров (Яндекс, Google) и для пользователей до отрисовки JS.

@@ -1,9 +1,11 @@
-# Version 1.5 - 21.09.2026 19:45:00 GMT
+# Version 1.7 - 22.09.2026 11:05:00 GMT
 # Static Router для TlibWebApp
 # Описание: Роутер для обработки статических страниц, серверных редиректов и таблицы редиректов.
 #           GET / — SEO-aware рендер: для компактных URL отчётов (/?123, /?123-ТССР) возвращает
 #             per-report title/description/canonical + видимый блок маршрута из services/seo/report_seo.py;
 #             для главной — кешированный шаблон; для фильтров/не найденных — шаблон + X-Robots-Tag: noindex.
+#             Метки из ROBOTS_CLEAN_PARAMS (ysclid и др.) и хвостовой «=» у компактного
+#             шифра (3725=) снимаются 301 на тот же URL без них. Legacy ?id= — до очистки.
 #           GET /robots.txt — динамически генерирует robots.txt с актуальным SITE_URL в Sitemap и Clean-param.
 #           GET /index.html — 301 редирект на / (устранение дубликата).
 #           GET /about.html — рендер с canonical + OG через render_about_html().
@@ -20,6 +22,10 @@
 #                защитные legacy-маршруты /doc.aspx (регистровые варианты) + /default.aspx.
 #           1.5: robots.txt разрешает обход PDF (Allow: /api/pdf/, /data/*.pdf$) — краулер должен
 #                скачать файл, чтобы увидеть X-Robots-Tag: noindex и убрать его из индекса.
+#           1.6: GET / снимает метки ROBOTS_CLEAN_PARAMS (ysclid и др.) редиректом 301
+#                на тот же URL без них — компактный адрес отчёта снова разбирается.
+#           1.7: хвостовой «=» у компактного шифра (3725= от Яндекса) тоже снимается 301;
+#                legacy ?id= обрабатывается до очистки меток — один переход, не два.
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -55,6 +61,45 @@ from services.seo.report_seo import (
 
 # Создаем роутер без prefix (корневые маршруты)
 router = APIRouter(tags=["static"])
+
+# Имена меток из Clean-param: сравнение ключа query без учёта регистра
+_TRACKING_PARAM_NAMES: frozenset[str] = frozenset(
+    name.lower() for name in ROBOTS_CLEAN_PARAMS.split("&") if name
+)
+
+
+def _strip_tracking_query(raw_query: str) -> str | None:
+    """
+    Убирает из сырой query метки из ROBOTS_CLEAN_PARAMS (ysclid, utm и т.п.)
+    и хвостовой «=» у первого сегмента, если это компактный шифр без значения
+    (Яндекс пересобирает /?3725 в /?3725=, когда дописывает ysclid).
+
+    None — вырезать нечего, редирект не нужен.
+    Пустая строка — в query были только метки, редирект на /.
+    Оставшиеся сегменты возвращаются как были, без перекодирования.
+    """
+    if not raw_query:
+        return None
+
+    kept: list[str] = []
+    stripped = False
+    for index, segment in enumerate(raw_query.split("&")):
+        key_raw, sep, value = segment.partition("=")
+        key = urllib.parse.unquote(key_raw).lower()
+        if key in _TRACKING_PARAM_NAMES:
+            stripped = True
+            continue
+        # Только первый сегмент: 3725= и 3725-%D0%A2…= — шифр, а не пустой параметр
+        if index == 0 and sep and value == "" and parse_report_query(key_raw) is not None:
+            kept.append(key_raw)
+            stripped = True
+            continue
+        kept.append(segment)
+
+    if not stripped:
+        return None
+    return "&".join(kept)
+
 
 def _build_canonical_redirect_url(redirect_target: str, page: int | None) -> str:
     """
@@ -166,6 +211,8 @@ async def robots_txt():
 async def root(request: Request):
     """
     SEO-aware обработчик корня.
+    - Legacy ?id= — редирект по таблице (до очистки меток, один переход).
+    - Метки из ROBOTS_CLEAN_PARAMS и хвостовой «=» у компактного шифра → 301 без них.
     - Пустой query → кешированный шаблон главной.
     - Компактный URL отчёта (?123, ?123-ТССР) + отчёт найден →
         per-report title/description/canonical + видимый блок маршрута.
@@ -176,6 +223,11 @@ async def root(request: Request):
     redirect = _resolve_legacy_redirect(request, "root")
     if redirect:
         return redirect
+
+    cleaned = _strip_tracking_query(request.url.query or "")
+    if cleaned is not None:
+        url = f"/?{cleaned}" if cleaned else "/"
+        return RedirectResponse(url=url, status_code=STATIC_REDIRECT_STATUS_CODE)
 
     raw_query = request.url.query or ""
 
