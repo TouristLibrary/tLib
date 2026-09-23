@@ -1,4 +1,5 @@
-# Version 1.3 - 14.05.2026 00:00:00 GMT
+# Version 1.4 - 23.09.2026 12:20:00 GMT
+# 1.4: при старте прерванный reindex из 30_processing/ уходит в 40_error/.
 # File Watcher Task - Фоновая задача обработки загруженных файлов
 # Описание: Асинхронная фоновая задача для автоматической обработки загружаемых файлов через staged pipeline.
 #           Pipeline: data.up/20_go/ → 30_processing/ → done/ (успех) или 40_error/ (ошибка).
@@ -18,7 +19,7 @@ from logging_config import app_logger, log_with_data
 
 # Импорт функций file_watcher (явно, без зависимости от package init)
 from .utils import initialize_directories
-from .pipeline import process_upload_cycle
+from .pipeline import process_upload_cycle, recover_interrupted_reindex
 from .notify import process_pending_notifications
 
 # Импорт конфигурационных констант
@@ -53,7 +54,10 @@ async def file_watcher_task(app_instance: FastAPI):
     if not initialize_directories():
         app_logger.critical("Не удалось инициализировать директории File Watcher")
         return
-    
+
+    # До цикла: остаток reindex в 30_processing/ — это прерванный рестарт, не живой прогон
+    recover_interrupted_reindex()
+
     while True:
         try:
             async with app_instance.state.db_lock:

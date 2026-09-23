@@ -1,4 +1,6 @@
-# Version 2.7 - 26.07.2026 09:00:00 GMT
+# Version 2.8 - 23.09.2026 12:20:00 GMT
+# v2.8: reindex — исключение при пересборке уводит триггер в 40_error (stem, не литерал);
+#       recover_interrupted_reindex() при старте переносит остаток из 30_processing/ в 40_error.
 # v2.7: canonicalize_json_dopshifr — приведение поля ДопШифр в JSON к UPPERCASE в 30_processing/.
 # File Watcher Pipeline - Оркестрация staged pipeline
 #
@@ -112,7 +114,7 @@ def _handle_reindex_trigger(stats: dict) -> bool:
     - Перемещает триггер в 30_processing/
     - Вызывает generate_final_database_check([]) — пересборка без новых файлов
     - При успехе публикует БД и перемещает триггер в done/
-    - При ошибке перемещает триггер в 40_error/
+    - При ошибке сборки или исключении перемещает триггер в 40_error/
 
     Args:
         stats: словарь статистики для обновления счетчиков
@@ -146,10 +148,26 @@ def _handle_reindex_trigger(stats: dict) -> bool:
         stats["errors"] += 1
         return True
 
-    final_result = generate_final_database_check([])
+    # stem, а не литерал: поиск выше регистронезависимый, glob в move_group_to_error — нет
+    group_id = trigger_file.stem
+
+    try:
+        final_result = generate_final_database_check([])
+    except Exception:
+        app_logger.error("[FILE_WATCHER] REINDEX: исключение при пересборке БД", exc_info=True)
+        move_group_to_error(group_id, "REINDEX: исключение при пересборке БД")
+        stats["errors"] += 1
+        return True
 
     if final_result["success"]:
-        published = publish_database()
+        try:
+            published = publish_database()
+        except Exception:
+            app_logger.error("[FILE_WATCHER] REINDEX: исключение при публикации БД", exc_info=True)
+            move_group_to_error(group_id, "REINDEX: исключение при публикации БД")
+            stats["errors"] += 1
+            return True
+
         if published:
             app_logger.info("[FILE_WATCHER] REINDEX: БД успешно пересобрана и опубликована")
         else:
@@ -166,10 +184,35 @@ def _handle_reindex_trigger(stats: dict) -> bool:
         error_lines = [f"  - {e['file']}: {e['error']}" for e in final_result["errors"]]
         error_msg = "REINDEX: пересборка БД завершилась с ошибками:\n" + "\n".join(error_lines)
         app_logger.error(f"[FILE_WATCHER] {error_msg}")
-        move_group_to_error("reindex", error_msg)
+        move_group_to_error(group_id, error_msg)
         stats["errors"] += 1
 
     return True
+
+
+def recover_interrupted_reindex() -> None:
+    """
+    Разбирает reindex, прерванный рестартом сервиса.
+
+    Триггер, оставшийся в 30_processing/, уходит в 40_error/ с reindex.err.
+    Обратно в 20_go/ его возвращать нельзя: при Restart=always падающая
+    пересборка иначе запускалась бы на каждом старте. Вызывается один раз
+    при старте File Watcher, до основного цикла.
+    """
+    processing_dir = Path(UPLOAD_PROCESSING_DIRECTORY)
+    if not processing_dir.exists():
+        return
+
+    stems: list[str] = []
+    for f in processing_dir.iterdir():
+        if f.is_file() and f.stem.lower() == REINDEX_TRIGGER_PREFIX and f.stem not in stems:
+            stems.append(f.stem)
+
+    for stem in stems:
+        app_logger.warning(
+            f"[FILE_WATCHER] REINDEX: триггер {stem} остался в 30_processing/ после рестарта"
+        )
+        move_group_to_error(stem, "Пересборка прервана рестартом сервиса")
 
 
 def _scan_and_separate_groups(stats: dict) -> tuple:

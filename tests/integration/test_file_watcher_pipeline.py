@@ -1,4 +1,5 @@
-# Version 1.2 - 14.06.2026 13:40:00 GMT
+# Version 1.3 - 23.09.2026 12:20:00 GMT
+# 1.3: reindex — успех в data.new, исключение при сборке и прерванный рестарт в 40_error.
 # Integration tests: File Watcher pipeline сквозные сценарии
 # Описание: Проверяет process_upload_cycle() на реальной файловой системе в tmp-директориях.
 #           Патчит config.* (ленивые импорты внутри функций) и services.file_watcher.pipeline.*
@@ -369,3 +370,63 @@ def test_delete_trigger_removes_files_from_data(fw_env):
 
     # Survivor остался в data/
     assert (fw_env["data"] / "00601-SRV.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Сценарий 8: reindex
+# ---------------------------------------------------------------------------
+
+
+def test_reindex_success_moves_trigger_to_done(fw_env):
+    """reindex.* пересобирает БД из data/ и уносит триггер в data.new/."""
+    from services.file_watcher.pipeline import process_upload_cycle
+
+    _write_json(fw_env["data"] / "00610-RIX.json", _valid_json(610, "RIX"))
+    (fw_env["go"] / "reindex.trigger").write_bytes(b"")
+
+    stats = process_upload_cycle()
+
+    assert stats["db_updated"] is True, stats
+    assert stats["errors"] == 0, stats
+    assert (fw_env["done"] / "reindex.trigger").exists()
+    assert not (fw_env["go"] / "reindex.trigger").exists()
+    assert not list(fw_env["processing"].iterdir())
+
+
+def test_reindex_exception_moves_trigger_to_error(fw_env, monkeypatch):
+    """Исключение при пересборке уводит триггер и reindex.err в 40_error/."""
+    import services.file_watcher.pipeline as fw_pipeline
+    from services.file_watcher.pipeline import process_upload_cycle
+
+    def _boom(_ids):
+        raise RuntimeError("сбой сборки")
+
+    monkeypatch.setattr(fw_pipeline, "generate_final_database_check", _boom)
+    (fw_env["go"] / "reindex.trigger").write_bytes(b"")
+
+    stats = process_upload_cycle()
+
+    assert stats["errors"] == 1, stats
+    assert stats["db_updated"] is False, stats
+    assert (fw_env["error"] / "reindex.trigger").exists()
+    assert (fw_env["error"] / "reindex.err").exists()
+    assert not list(fw_env["processing"].iterdir())
+    assert not list(fw_env["go"].iterdir())
+
+
+def test_recover_interrupted_reindex_moves_leftover_to_error(fw_env):
+    """Остаток reindex в 30_processing/ при старте уходит в 40_error/, очередь не трогается."""
+    from services.file_watcher.pipeline import recover_interrupted_reindex
+
+    (fw_env["processing"] / "reindex.trigger").write_bytes(b"")
+
+    recover_interrupted_reindex()
+
+    assert (fw_env["error"] / "reindex.trigger").exists()
+    assert (fw_env["error"] / "reindex.err").exists()
+    assert not list(fw_env["processing"].iterdir())
+    assert not list(fw_env["go"].iterdir())
+
+    # Пустой 30_processing/ — повторный вызов ничего не ломает
+    recover_interrupted_reindex()
+    assert not list(fw_env["processing"].iterdir())
