@@ -1,10 +1,12 @@
-# Version 1.3 - 29.07.2026 13:55:00 GMT
+# Version 1.4 - 23.09.2026 09:30:00 GMT
 # Конфигурация базы данных и File Watcher TlibWebApp
 # Описание: Настройки SQLite БД, бэкапов, staged pipeline File Watcher,
 #           параметры тяжёлых запросов и лимиты валидации данных.
 # 1.1: добавлена константа UPLOAD_TLIB_START_NUMBER.
 # 1.2: удалена дубль-константа TEMP_DATABASE_PATH (оставлена DATABASE_NEW_FILE как единственный триггер).
 # 1.3: добавлена PCLOUD_DATA_BASE_URL для столбца pCloud в XLSX-экспорте.
+# 1.4: добавлены PCLOUD_SYNC_OK_FILENAME и PCLOUD_SYNC_STALE_HOURS — статус
+#      зеркала pCloud (внешний systemd-таймер, doc/DEPLOY.md) в админ-панели.
 
 # ==================== БАЗА ДАННЫХ ====================
 
@@ -33,6 +35,17 @@ XLSX_EXPORT_FILENAME: str = "tlib.xlsx"
 
 # Базовый URL каталога-зеркала data/ в облаке (для столбца pCloud в XLSX-экспорте)
 PCLOUD_DATA_BASE_URL: str = "https://filedn.eu/laITJQDRIPpbOjdHpDVwUCb/Tlib/data/"
+
+# Имя файла-метки успешной синхронизации data/ с pCloud (лежит в LOG_DIRECTORY).
+# Обновляется внешней systemd-службой (ExecStartPost=touch) после каждого удачного
+# rclone sync — см. doc/DEPLOY.md. Файла нет => зеркало не настроено
+# (обычная ситуация для развёртывания без pCloud, не ошибка).
+PCLOUD_SYNC_OK_FILENAME: str = "pcloud_sync.ok"
+
+# Порог "устаревания" метки синхронизации (часы) для индикатора в админ-панели.
+# Таймер синхронизации срабатывает раз в 15 минут — 2 часа покрывают несколько
+# пропущенных прогонов без ложных предупреждений при разовых сетевых сбоях.
+PCLOUD_SYNC_STALE_HOURS: int = 2
 
 # Таймаут подключения к SQLite для health check (секунды)
 SQLITE_CONNECT_TIMEOUT: int = 5

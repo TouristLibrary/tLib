@@ -1,9 +1,11 @@
-# Version 1.1 - 15.06.2026 17:18:00 GMT
+# Version 1.2 - 23.09.2026 09:30:00 GMT
 # Сервис сбора операционного статуса для панели администратора.
 # Описание: Функции сбора данных о здоровье системы, дисках, динамике пополнения,
 #           трафике и событиях безопасности. Вызываются из admin_router.
 #           Принимают app_state (Starlette State) вместо Request — сервис свободен от FastAPI.
 # 1.1: UPLOAD_PAUSE_DIRECTORY перенесён в верхний блок from config import (единообразие, monkeypatch).
+# 1.2: добавлен collect_pcloud_sync() — статус зеркала data/ в pCloud по файлу-метке
+#      (внешняя systemd-служба, doc/DEPLOY.md), встроен в collect_health().
 
 import os
 import re
@@ -21,6 +23,8 @@ from config import (
     LOG_DIRECTORY,
     LOG_FILE_CRITICAL,
     MAX_CACHE_SIZE,
+    PCLOUD_SYNC_OK_FILENAME,
+    PCLOUD_SYNC_STALE_HOURS,
     STATE_DB_WATCHER_TASK,
     STATE_FILE_WATCHER_TASK,
     STATE_STARTED_AT,
@@ -73,6 +77,35 @@ _LOG_TIMESTAMP_RE = re.compile(r'^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
 # Сбор данных
 # ---------------------------------------------------------------------------
 
+def collect_pcloud_sync() -> dict | None:
+    """
+    Статус зеркала data/ в pCloud по файлу-метке (LOG_DIRECTORY/PCLOUD_SYNC_OK_FILENAME).
+
+    Метку обновляет внешняя systemd-служба (ExecStartPost=touch) после каждого
+    успешного rclone sync — см. doc/DEPLOY.md. Синхронизация в код
+    приложения не встроена, файла может не быть по двум причинам:
+      - зеркало не настроено на этом сервере (штатно для развёртывания без pCloud);
+      - синхронизация настроена, но ни разу не завершилась успешно.
+    В обоих случаях возвращаем None — отличать эти причины не нужно, администратор
+    сам знает, настраивал ли он pCloud.
+    """
+    marker_path = Path(LOG_DIRECTORY) / PCLOUD_SYNC_OK_FILENAME
+    try:
+        if not marker_path.exists():
+            return None
+        mtime = datetime.fromtimestamp(marker_path.stat().st_mtime, tz=timezone.utc)
+    except Exception as e:
+        app_logger.error(f"[admin] Ошибка чтения метки pcloud_sync: {e}")
+        return None
+
+    age_seconds = (datetime.now(timezone.utc) - mtime).total_seconds()
+    return {
+        "last_ok": mtime.isoformat(),
+        "age_minutes": max(0, round(age_seconds / 60)),
+        "stale": age_seconds > PCLOUD_SYNC_STALE_HOURS * 3600,
+    }
+
+
 def collect_health(app_state) -> dict:
     """Раздел 1: здоровье системы — только индикаторы."""
     result: dict = {}
@@ -107,6 +140,9 @@ def collect_health(app_state) -> dict:
 
     # Пауза обработки
     result["processing_paused"] = Path(UPLOAD_PAUSE_DIRECTORY).exists()
+
+    # Зеркало data/ в pCloud (внешняя служба, необязательная фича — не влияет на overall)
+    result["pcloud_sync"] = collect_pcloud_sync()
 
     # Uptime
     started_at = getattr(app_state, STATE_STARTED_AT, None)

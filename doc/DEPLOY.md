@@ -363,6 +363,123 @@ sudo journalctl -u caddy -f    # Логи
 
 ---
 
+## Зеркало data/ в pCloud (необязательно)
+
+Каталог отчётов `data/` можно автоматически зеркалировать в облако pCloud —
+одновременно резервная копия и публичное зеркало для ссылок вида
+`PCLOUD_DATA_BASE_URL` (`config/database.py`). Синхронизация выполняется
+программой **rclone** через systemd-службу и таймер (раз в 15 минут), полностью
+вне кода приложения — без неё сайт работает как обычно.
+
+Ниже — минимальная настройка для пользователя `tlib-admin` и приложения в
+`/opt/TlibWebApp`; подставьте свои пути и папку в pCloud. Заглушку `<папка>` —
+путь внутри pCloud, например `Public Folder/Tlib/data` — замените одинаково во всех
+командах ниже.
+
+**0. Публичные ссылки сайта.** `PCLOUD_DATA_BASE_URL` в `config/database.py` по умолчанию
+указывает на зеркало tlib.ru — на своём сервере замените его на ссылку своей папки,
+иначе `cloud.html` и столбец pCloud в XLSX-экспорте будут вести на чужое облако.
+Прямые ссылки (`https://filedn.eu/...`) есть только у файлов внутри **Public Folder**:
+она доступна на платных тарифах pCloud (Premium/Business) и включается вручную на
+my.pcloud.com ([справка pCloud](https://help.pcloud.com/article/public-folder)). Всё
+содержимое Public Folder публично — не кладите туда ничего, кроме `data/`. Без Public
+Folder зеркало работает только как резервная копия.
+
+**1. rclone без sudo** (в `~/.local/bin`, актуальная версия; пакет из apt устаревший).
+Нужен `unzip` (`sudo apt install -y unzip`); на ARM-сервере замените в ссылке `amd64`
+на `arm64`:
+
+```bash
+cd /tmp && curl -fsSL -o rclone.zip https://downloads.rclone.org/rclone-current-linux-amd64.zip && unzip -oq rclone.zip && mkdir -p ~/.local/bin && install -m 755 rclone-*-linux-amd64/rclone ~/.local/bin/rclone && rm -rf rclone.zip rclone-*-linux-amd64
+```
+
+**2. Подключение к pCloud:** `~/.local/bin/rclone config` → новый remote `pcloud`, тип `pcloud`.
+Для европейского аккаунта в advanced config указать `hostname = eapi.pcloud.com`
+(иначе — ошибка токена). На сервере без браузера ответить «No» на вопрос об
+автоматической авторизации и выполнить предложенную `rclone authorize` на машине
+с браузером ([Remote Setup](https://rclone.org/remote_setup/)).
+Проверка: `~/.local/bin/rclone lsd pcloud:`.
+
+**3. Первый прогон вручную, сначала пробный** (ничего не меняет — проверить список
+удалений в облаке):
+
+```bash
+~/.local/bin/rclone sync /opt/TlibWebApp/data 'pcloud:<папка>' --dry-run -v
+```
+
+Затем тот же запуск без `--dry-run`. Направление всегда «сервер → облако»; `rclone move`
+не использовать. `--max-delete` в службе ниже — предохранитель от зачистки облака,
+если сервер увидит пустой `data/`; в ручном первом прогоне лимита нет — список удалений
+уже проверен пробным прогоном.
+
+Первый настоящий прогон большого `data/` может идти часами — запускайте его в фоне,
+чтобы обрыв SSH его не прервал; прерванный прогон просто повторите, rclone докачает
+только недостающее:
+
+```bash
+setsid nohup ~/.local/bin/rclone sync /opt/TlibWebApp/data 'pcloud:<папка>' -v --log-file ~/rclone-data.log < /dev/null > /dev/null 2>&1 &
+```
+
+Ход прогона: `tail -f ~/rclone-data.log`; закончился, когда `pgrep -x rclone` ничего не выводит.
+
+**4. Служба и таймер** (sudo) — **только после окончания первого прогона**, иначе таймер
+запустит второй rclone параллельно. `RequiresMountsFor` — реальный путь к `data/`: если диск
+не смонтирован, прогон не запускается. systemd не разворачивает симлинки, поэтому если
+`data/` — симлинк на отдельный диск (см. «Отдельные диски для данных» выше), укажите путь
+назначения из `readlink -f /opt/TlibWebApp/data` (например, `/mnt/slow/data`).
+`ExecStartPost` выполняется только при успешном `rclone sync` и обновляет метку для админки:
+
+```bash
+sudo tee /etc/systemd/system/tlib-pcloud-sync.service >/dev/null <<'EOF'
+[Unit]
+Description=Зеркало /opt/TlibWebApp/data в pCloud (rclone sync)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/opt/TlibWebApp/data
+
+[Service]
+Type=oneshot
+User=tlib-admin
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/home/tlib-admin/.local/bin/rclone sync /opt/TlibWebApp/data "pcloud:<папка>" --config /home/tlib-admin/.config/rclone/rclone.conf --max-delete 100 -v --log-file /home/tlib-admin/rclone-data.log
+ExecStartPost=/usr/bin/touch /opt/TlibWebApp/logs/pcloud_sync.ok
+EOF
+
+sudo tee /etc/systemd/system/tlib-pcloud-sync.timer >/dev/null <<'EOF'
+[Unit]
+Description=Каждые 15 минут: зеркало data в pCloud
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=15min
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemd-analyze verify /etc/systemd/system/tlib-pcloud-sync.service /etc/systemd/system/tlib-pcloud-sync.timer && sudo systemctl daemon-reload && sudo systemctl enable --now tlib-pcloud-sync.timer && sudo systemctl start --no-block tlib-pcloud-sync.service
+```
+
+Проверка: `systemctl status tlib-pcloud-sync.service` (`status=0/SUCCESS`),
+`systemctl list-timers tlib-pcloud-sync.timer`, лог — `~/rclone-data.log`.
+
+**Статус в админке и в письме.** Метка `logs/pcloud_sync.ok` — единственная связь
+синхронизации с приложением. Панель администратора (`/admin`, раздел «Здоровье
+системы») и ежедневный дайджест показывают по её возрасту один из трёх статусов
+(устаревшая метка в дайджесте попадает ещё и в «ТРЕБУЕТ ВНИМАНИЯ»):
+
+| Статус в админке | Когда |
+|---|---|
+| «Не настроено» | метки нет — зеркало не настроено на этом сервере (обычная ситуация, не ошибка) |
+| «OK, N мин/ч назад» | последний прогон был успешным и недавно |
+| «Не обновлялось N ч» | метка не обновлялась дольше `PCLOUD_SYNC_STALE_HOURS` (по умолчанию 2 часа) — стоит проверить службу и лог rclone на сервере |
+
+Если синхронизацию решили отключить, удалите файл `logs/pcloud_sync.ok` вместе
+со службой и таймером — иначе админка продолжит показывать «Не обновлялось».
+
+---
+
 ## Управление
 
 | Действие | Локальный | Tailscale Funnel | Caddy |

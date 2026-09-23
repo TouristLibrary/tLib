@@ -1,4 +1,4 @@
-// Version 3.17 - 20.09.2026
+// Version 3.18 - 23.09.2026
 // Admin Dashboard JS для TlibWebApp
 // Описание: Аутентификация через Magic Link + цифровой код + управление правами администраторов.
 //           Неавторизованные видят только хедер с формой входа и общим статусом.
@@ -22,6 +22,9 @@
 //   «без входов» спрятаны под <details>.
 // Изменения v3.16: убран висячий вызов loadSessions() в _userAction() (функция удалена в v3.15, вызов не удалили).
 // Изменения v3.17: плитка Admin IP Change в renderSecurity (event_type=ADMIN_IP_CHANGE, level=low).
+// Изменения v3.18: строка «Зеркало pCloud» в renderHealth (health.pcloud_sync) — статус
+//   внешней systemd-синхронизации data/ (doc/DEPLOY.md); null = не настроено;
+//   точное время последнего успеха — во всплывающей подсказке.
 
 import { getCurrentUser, requestLink, verifyCode as authVerifyCode, logout as authLogout } from './services/authService.js';
 import { escapeHtml } from './utils/sanitize.js';
@@ -83,6 +86,17 @@ function badgeWarn(val, labelTrue, labelFalse) {
   return `<span class="badge ${val ? 'badge-warn' : 'badge-ok'}">${val ? labelTrue : labelFalse}</span>`;
 }
 
+// health.pcloud_sync: null (зеркало не настроено на этом сервере — не ошибка),
+// либо {age_minutes, stale}. Синхронизация — внешняя systemd-служба, не часть кода.
+function badgePcloudSync(p) {
+  if (!p) return `<span class="badge badge-neutral">Не настроено</span>`;
+  const hours = Math.round(p.age_minutes / 60);
+  const title = `title="Последняя успешная синхронизация: ${fmtDate(p.last_ok)} UTC"`;
+  if (p.stale) return `<span class="badge badge-warn" ${title}>Не обновлялось ${hours} ч</span>`;
+  const ago = p.age_minutes < 60 ? `${p.age_minutes} мин назад` : `${hours} ч назад`;
+  return `<span class="badge badge-ok" ${title}>OK, ${ago}</span>`;
+}
+
 function kvItem(label, value) {
   return `<div class="kv-item"><span class="kv-label">${label}</span><span class="kv-value">${value}</span></div>`;
 }
@@ -118,6 +132,7 @@ function renderHealth(h) {
     ${kvItem('DB Watcher',      badgeOk(h.db_watcher_running,  'Работает',   'Остановлен'))}
     ${kvItem('File Watcher',    badgeOk(h.file_watcher_running,'Работает',   'Остановлен'))}
     ${kvItem('Обработка',       badgeWarn(h.processing_paused, 'Пауза',      'Активна'))}
+    ${kvItem('Зеркало pCloud',  badgePcloudSync(h.pcloud_sync))}
     ${kvItem('Uptime',          fmtUptime(h.uptime_seconds))}
     ${kvItem('Запущен',         fmtDate(h.started_at))}
   </div>
