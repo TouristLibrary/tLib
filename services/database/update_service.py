@@ -1,4 +1,4 @@
-# Version 1.1 - 07.01.2026 13:33:25 GMT
+# Version 1.2 - 23.09.2026 13:15:00 GMT
 # Update Service - Управление обновлениями и бэкапами БД
 # Описание: Модуль для критической системной работы с базой данных: валидация, бэкапы, автообновление.
 #           validate_sqlite_database() проверяет что файл является валидной SQLite базой данных.
@@ -6,8 +6,10 @@
 #           perform_database_update() выполняет автообновление БД при появлении файла-триггера (tlib-new.db),
 #           создаёт бэкап текущей базы в data.old/, атомарно заменяет БД, обновляет кэш в app.state,
 #           и обновляет app.state.reference_version для сигнализации фронтенду о смене справочников.
-#           Экспорт в XLSX изолирован в отдельный модуль и вызывается с обработкой ошибок.
+#           При невалидном триггере и при любом исключении во время замены шлёт алерт DB_SWAP_FAILED.
+#           Отсутствие триггера алертом не является. Экспорт в XLSX изолирован и вызывается с обработкой ошибок.
 #           Все timestamp бэкапов используют UTC+0.
+# Изменения v1.2: алерт DB_SWAP_FAILED при сбое замены — раньше исключение гасилось и письмо не уходило.
 
 import logging
 import shutil
@@ -17,6 +19,7 @@ from datetime import datetime, timezone
 from logging_config import app_logger, log_with_data
 from config import BACKUP_TIMESTAMP_FORMAT, DATABASE_BACKUP_PREFIX, BACKUP_DIRECTORY, XLSX_EXPORT_FILENAME
 from config import STATE_KATEGORIA_UNIFIED, STATE_REPORTS_COUNT
+from services.alerts.alerter import send_admin_alert
 from .reference_loader import load_reference_lists, load_redirect_table
 
 
@@ -98,6 +101,11 @@ def perform_database_update(db_dir: Path, app_state, db_path: str, backup_patter
         if not validate_sqlite_database(new_db_path):
             app_logger.error(f"Файл {new_file_name} не является валидной SQLite БД")
             new_db_path.unlink()
+            send_admin_alert(
+                "DB_SWAP_FAILED",
+                error_type="InvalidSQLite",
+                error=f"Файл {new_file_name} не является валидной SQLite базой и удалён",
+            )
             return False
         
         # 2. Создание бэкапа текущей базы
@@ -147,4 +155,9 @@ def perform_database_update(db_dir: Path, app_state, db_path: str, backup_patter
                      error=str(e),
                      file=new_file_name)
         app_logger.error(str(e), exc_info=True)
+        send_admin_alert(
+            "DB_SWAP_FAILED",
+            error_type=type(e).__name__,
+            error=str(e),
+        )
         return False

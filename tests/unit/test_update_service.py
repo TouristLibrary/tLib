@@ -1,8 +1,10 @@
-# Version 1.0 - 12.06.2026 18:00:00 GMT
+# Version 1.1 - 23.09.2026 13:15:00 GMT
 # Unit tests for services/database/update_service.py
 # Описание: Проверяет validate_sqlite_database (магический заголовок, невалидные файлы)
-#           и perform_database_update (атомарная замена, бэкап, удаление триггера).
-#           Всё на tmp-файлах, без живой БД приложения.
+#           и perform_database_update (атомарная замена, бэкап, удаление триггера,
+#           алерт DB_SWAP_FAILED при сбое и тишину при отсутствии триггера).
+#           Всё на tmp-файлах, без живой БД приложения. send_admin_alert подменяется.
+# Изменения v1.1: заглушка алерта и проверки сбоя замены.
 
 from __future__ import annotations
 
@@ -77,7 +79,20 @@ def _dummy_state():
 
 
 class TestPerformDatabaseUpdate:
-    def _run(self, tmp_path: Path):
+    @pytest.fixture(autouse=True)
+    def capture_alerts(self, monkeypatch):
+        """Подменяет send_admin_alert: иначе сбой полезет в auth.db и SMTP."""
+        self.alerts = []
+
+        def capture(event_type, **data):
+            self.alerts.append((event_type, data))
+
+        monkeypatch.setattr(
+            "services.database.update_service.send_admin_alert",
+            capture,
+        )
+
+    def _run(self, tmp_path: Path, reference_lists_effect=None, new_table: str = "test"):
         from services.database.update_service import perform_database_update
         from config import DATABASE_BACKUP_PREFIX, BACKUP_TIMESTAMP_FORMAT
 
@@ -90,7 +105,7 @@ class TestPerformDatabaseUpdate:
         _make_sqlite(current_db)
 
         new_db = db_dir / "tlib-new.db"
-        _make_sqlite(new_db)
+        _make_sqlite(new_db, table=new_table)
 
         app_state = _dummy_state()
 
@@ -105,7 +120,7 @@ class TestPerformDatabaseUpdate:
                 "kategoria_unified_list": [],
                 "reports_count": 42,
                 "redirect_table": {},
-            }),
+            }, side_effect=reference_lists_effect),
             patch("services.database.update_service.load_redirect_table", return_value={}),
             # Пропускаем XLSX-экспорт — не нужен в тесте
             patch("services.database.update_service.XLSX_EXPORT_FILENAME", "tlib.xlsx"),
@@ -124,6 +139,7 @@ class TestPerformDatabaseUpdate:
     def test_returns_true_on_success(self, tmp_path):
         result, *_ = self._run(tmp_path)
         assert result is True
+        assert self.alerts == []
 
     def test_trigger_file_replaced(self, tmp_path):
         _, current_db, new_db, *_ = self._run(tmp_path)
@@ -155,6 +171,7 @@ class TestPerformDatabaseUpdate:
             new_file_name="tlib-new.db",
         )
         assert result is False
+        assert self.alerts == []
 
     def test_invalid_trigger_file_returns_false(self, tmp_path):
         from services.database.update_service import perform_database_update
@@ -177,3 +194,26 @@ class TestPerformDatabaseUpdate:
             )
         assert result is False
         assert not bad_new.exists()
+        assert len(self.alerts) == 1
+        event_type, data = self.alerts[0]
+        assert event_type == "DB_SWAP_FAILED"
+        assert data["error_type"] == "InvalidSQLite"
+
+    def test_exception_after_replace_sends_alert(self, tmp_path):
+        result, current_db, new_db, _, _ = self._run(
+            tmp_path,
+            reference_lists_effect=sqlite3.OperationalError("no such table"),
+            new_table="swapped",
+        )
+        assert result is False
+        assert not new_db.exists()
+        assert len(self.alerts) == 1
+        event_type, data = self.alerts[0]
+        assert event_type == "DB_SWAP_FAILED"
+        assert data["error_type"] == "OperationalError"
+        conn = sqlite3.connect(str(current_db))
+        names = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        conn.close()
+        assert "swapped" in names

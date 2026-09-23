@@ -56,7 +56,7 @@ daily_digest_task (фон) → parse_critical_log()
 
 | `event_type` | Человеческое описание |
 |---|---|
-| `DB_SWAP_FAILED` | Не удалось обновить БД из tlib-new.db |
+| `DB_SWAP_FAILED` | Невалидный `data.db/tlib-new.db` или сбой замены |
 | `DISK_LOW` | Занятость диска > `DISK_CRIT_PERCENT` (90%) **или** свободно < резерва при блокировке аплоада |
 | `SERVER_ERROR_STORM` | Большое количество ошибок сервера подряд |
 | `SECURITY_STORM` | Более `SECURITY_STORM_THRESHOLD` security-событий за окно |

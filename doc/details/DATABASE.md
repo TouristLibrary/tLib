@@ -9,7 +9,7 @@
 | Файл | Назначение |
 |------|------------|
 | `data.db/tlib.db` | Рабочая база данных |
-| `tlib-new.db` | Триггер автообновления |
+| `data.db/tlib-new.db` | Триггер автообновления |
 | `data.old/tlib-*.db` | Бэкапы с timestamp |
 | `data.db/tlib.xlsx` | Экспорт в Excel |
 
@@ -45,7 +45,7 @@
 
 1. Скопировать новую БД:
    ```bash
-   cp new_database.db tlib-new.db
+   cp new_database.db data.db/tlib-new.db
    ```
 
 2. Database Watcher автоматически (каждые 5 сек):
@@ -75,9 +75,10 @@ touch data.up/20_go/reindex.now
 
 ### При ошибке
 
-- Невалидный файл удаляется автоматически
-- Текущая БД остается без изменений
-- Ошибка записывается в логи
+- Невалидный файл удаляется автоматически, рабочая база не меняется
+- Если ошибка случилась уже после замены, база новая, а кэш `app.state` остался старым
+- Ошибка пишется в `logs/critical.log`; администратору уходит письмо `DB_SWAP_FAILED` (не чаще раза в `ALERT_THROTTLE_MINUTES`)
+- Перезапуск подхватывает справочники из новой базы. Если они не восстановились — база структурно негодная, нужен откат из `data.old/`
 
 ---
 
@@ -88,7 +89,7 @@ touch data.up/20_go/reindex.now
 ```
 изменение data/
   → generate_final_database_check([…])   # пересборка tlib-new.db
-  → publish_database()                   # tlib-new.db → assets/tlib-new.db
+  → publish_database()                   # tlib-new.db → data.db/tlib-new.db
   → database_watcher_task                # обнаруживает триггер
   → perform_database_update()            # атомарный swap + refresh app.state
 ```
@@ -135,8 +136,8 @@ request.app.state.tip_list
 # Посмотреть бэкапы
 ls -la data.old/tlib-*.db
 
-# Восстановить
-cp data.old/tlib-20251205093000.db tlib-new.db
+# Восстановить: watcher подхватит файл и заменит рабочую базу
+cp data.old/tlib-20251205093000.db data.db/tlib-new.db
 ```
 
 ### Очистка
