@@ -1,9 +1,10 @@
-# Version 1.2 - 04.09.2026 14:25:00 GMT
+# Version 1.3 - 23.09.2026 10:15:00 GMT
 # Unit tests for services/alerts/
 # Описание: Тесты парсера critical.log, форматирования писем,
 #           логики троттлинга и сборки дайджеста. SMTP не вызывается (замокан).
 # Изменения v1.2: test_subject_prefix_tlib -> test_subject_prefix_domain/test_subject_prefix_reflects_domain
 #           (тема письма использует MAIL_SUBJECT_PREFIX — домен из SITE_URL — вместо хардкода "[tLib]").
+# Изменения v1.3: строка зеркала pCloud в дайджесте (нет метки / свежая / устаревшая).
 
 from __future__ import annotations
 
@@ -261,6 +262,41 @@ class TestBuildDigest(unittest.TestCase):
             subject, body = build_digest(stats_collector=None)
         self.assertIn("СОБЫТИЯ", body)
         self.assertIn("СТАТИСТИКА", body)
+
+    def _digest_quiet(self, pcloud_status):
+        """Дайджест без событий лога и с нормальным диском, заданный статус зеркала."""
+        from services.alerts.digest import build_digest
+        disk_ok = {"used_pct": 50, "free_gb": 50.0, "used_gb": 50.0, "total_gb": 100.0,
+                   "free_bytes": 50 * 1024**3, "used_bytes": 50 * 1024**3, "total_bytes": 100 * 1024**3}
+        with patch("services.alerts.digest.parse_critical_log", return_value=[]), \
+             patch("services.alerts.digest._collect_events_items", return_value=[]), \
+             patch("services.alerts.digest.collect_pcloud_sync", return_value=pcloud_status), \
+             patch("services.alerts.digest.get_disk_usage", return_value=disk_ok), \
+             patch("pathlib.Path.exists", return_value=False):
+            return build_digest(stats_collector=None)
+
+    def test_pcloud_not_configured_is_stats_only(self):
+        subject, body = self._digest_quiet(None)
+        self.assertIn("всё в порядке", subject)
+        self.assertNotIn("ТРЕБУЕТ ВНИМАНИЯ", body)
+        self.assertIn("- Зеркало pCloud: не настроено.", body)
+
+    def test_pcloud_fresh_in_stats(self):
+        subject, body = self._digest_quiet(
+            {"last_ok": "2026-09-23T07:00:00+00:00", "age_minutes": 10, "stale": False}
+        )
+        self.assertIn("всё в порядке", subject)
+        self.assertNotIn("ТРЕБУЕТ ВНИМАНИЯ", body)
+        self.assertIn("- Зеркало pCloud: OK, обновлено 10 мин назад.", body)
+
+    def test_pcloud_stale_raises_attention(self):
+        subject, body = self._digest_quiet(
+            {"last_ok": "2026-09-23T04:00:00+00:00", "age_minutes": 180, "stale": True}
+        )
+        self.assertIn("требуют внимания", subject)
+        self.assertIn("ТРЕБУЕТ ВНИМАНИЯ", body)
+        self.assertIn("СТАТИСТИКА", body)
+        self.assertEqual(body.count("- Зеркало pCloud: не обновлялось 3 ч."), 2)
 
 
 # ---------------------------------------------------------------------------

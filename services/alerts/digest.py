@@ -1,4 +1,4 @@
-# Version 1.3 - 04.09.2026 14:25:00 GMT
+# Version 1.4 - 23.09.2026 10:15:00 GMT
 # Ежедневный дайджест для администраторов TlibWebApp
 # Описание: Сборка и отправка ежедневного email-дайджеста.
 #           Парсит critical.log за 24ч, читает статистику из StatsCollector,
@@ -9,6 +9,7 @@
 #           Ежечасно проверяет диск и шлёт URGENT-алерт при критической занятости.
 # 1.2: shutil.disk_usage заменён get_disk_usage из upload_io (единый helper расчёта диска).
 # 1.3: тема дайджеста использует MAIL_SUBJECT_PREFIX (домен из SITE_URL) вместо хардкода "[tLib]".
+# 1.4: строка зеркала pCloud в СТАТИСТИКА; устаревшая метка — ещё и в ТРЕБУЕТ ВНИМАНИЯ.
 
 import asyncio
 import logging
@@ -31,6 +32,7 @@ from config import (
     DIGEST_MARKER_FILE,
 )
 from logging_config import app_logger, parse_logfmt_fields
+from services.admin.status_service import collect_pcloud_sync
 from services.alerts.alerter import send_admin_alert
 from services.alerts.recipients import collect_admin_emails
 from services.upload.upload_io import get_disk_usage
@@ -87,6 +89,28 @@ def parse_critical_log(hours: int = 24) -> list[dict]:
 # ============================================================================
 # СБОРЩИКИ СЕКЦИЙ
 # ============================================================================
+
+def _pcloud_sync_lines() -> tuple[str | None, str]:
+    """Строки дайджеста про зеркало pCloud: (внимание или None, статистика).
+
+    «Не настроено» не требует внимания — на сервере без pCloud это норма.
+    Устаревшая метка — и предупреждение, и строка статистики (один и тот же текст).
+    """
+    status = collect_pcloud_sync()
+    if status is None:
+        return None, "- Зеркало pCloud: не настроено."
+    minutes = status["age_minutes"]
+    if status["stale"]:
+        hours = max(1, round(minutes / 60))
+        text = f"- Зеркало pCloud: не обновлялось {hours} ч."
+        return text, text
+    if minutes < 60:
+        text = f"- Зеркало pCloud: OK, обновлено {minutes} мин назад."
+    else:
+        hours = max(1, round(minutes / 60))
+        text = f"- Зеркало pCloud: OK, обновлено {hours} ч назад."
+    return None, text
+
 
 def _collect_attention_items(log_records: list[dict]) -> list[str]:
     """Формирует строки секции ТРЕБУЕТ ВНИМАНИЯ из записей лога и состояния папок."""
@@ -166,6 +190,10 @@ def _collect_attention_items(log_records: list[dict]) -> list[str]:
     except Exception:
         pass
 
+    attention, _ = _pcloud_sync_lines()
+    if attention:
+        items.append(attention)
+
     return items
 
 
@@ -215,6 +243,9 @@ def _collect_stats_items(stats_collector=None) -> list[str]:
                 items.append(f"- Топ отчётов по просмотрам: {top_str}.")
         except Exception as e:
             _log.error(f"[digest] Ошибка сбора статистики: {e}")
+
+    _, pcloud_line = _pcloud_sync_lines()
+    items.append(pcloud_line)
 
     # Диск — всегда показываем
     try:
