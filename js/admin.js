@@ -1,4 +1,4 @@
-// Version 3.18 - 23.09.2026
+// Version 3.19 - 23.09.2026
 // Admin Dashboard JS для TlibWebApp
 // Описание: Аутентификация через Magic Link + цифровой код + управление правами администраторов.
 //           Неавторизованные видят только хедер с формой входа и общим статусом.
@@ -25,6 +25,8 @@
 // Изменения v3.18: строка «Зеркало pCloud» в renderHealth (health.pcloud_sync) — статус
 //   внешней systemd-синхронизации data/ (doc/DEPLOY.md); null = не настроено;
 //   точное время последнего успеха — во всплывающей подсказке.
+// Изменения v3.19: бейдж реиндексации из поля reindex ответа /api/admin/status;
+//   опрос /api/admin/reindex-status убран, обновление — вместе с дашбордом.
 
 import { getCurrentUser, requestLink, verifyCode as authVerifyCode, logout as authLogout } from './services/authService.js';
 import { escapeHtml } from './utils/sanitize.js';
@@ -37,7 +39,6 @@ const API_GRANT            = '/api/admin/grant';
 const API_REVOKE           = '/api/admin/revoke';
 const API_PAUSE            = '/api/admin/pause';
 const API_REINDEX          = '/api/admin/reindex';
-const API_REINDEX_ST       = '/api/admin/reindex-status';
 const API_SETTINGS         = '/api/admin/settings';
 const API_TEST_EMAIL       = '/api/admin/test-email';
 const API_USERS            = '/api/admin/users';
@@ -97,6 +98,17 @@ function badgePcloudSync(p) {
   return `<span class="badge badge-ok" ${title}>OK, ${ago}</span>`;
 }
 
+// Состояние реиндексации приходит с сервера (поле reindex). Время — запуск, UTC.
+function badgeReindex(r) {
+  if (!r || r.status === 'none') return '';
+  if (r.status === 'queued') return '<span class="badge badge-neutral">В очереди</span>';
+  if (r.status === 'processing') return '<span class="badge badge-warn">Выполняется</span>';
+  const when = fmtDate(r.started_at);
+  if (r.status === 'done') return `<span class="badge badge-ok">Готово, запуск ${when}</span>`;
+  if (r.status === 'error') return `<span class="badge badge-error">Ошибка, запуск ${when}</span>`;
+  return '';
+}
+
 function kvItem(label, value) {
   return `<div class="kv-item"><span class="kv-label">${label}</span><span class="kv-value">${value}</span></div>`;
 }
@@ -119,12 +131,13 @@ function setOverall(overall) {
 
 // ---- section 1: Health -----------------------------------------------------
 
-function renderHealth(h) {
+function renderHealth(h, reindex) {
   setOverall(h.overall || 'unhealthy');
 
   const paused = h.processing_paused;
   const pauseLabel = paused ? 'Закачка выключена' : 'Закачка включена';
   const pauseCls   = paused ? 'mgmt-btn mgmt-btn-danger' : 'mgmt-btn';
+  const reindexBusy = reindex && (reindex.status === 'queued' || reindex.status === 'processing');
 
   return `<div class="kv-grid">
     ${kvItem('База данных',     badgeOk(h.db_accessible,       'Доступна',   'Недоступна'))}
@@ -138,8 +151,8 @@ function renderHealth(h) {
   </div>
   <div class="mgmt-row" style="margin-top:14px">
     <button class="${pauseCls}" id="pauseBtn">${pauseLabel}</button>
-    <button class="mgmt-btn" id="reindexBtn">Реиндексировать</button>
-    <span id="reindex-status" style="font-size:13px;color:#555;margin-left:4px"></span>
+    <button class="mgmt-btn" id="reindexBtn"${reindexBusy ? ' disabled' : ''}>Реиндексировать</button>
+    <span id="reindex-status" style="font-size:13px;color:#555;margin-left:4px">${badgeReindex(reindex)}</span>
   </div>
   <div id="processing-msg" class="mgmt-msg"></div>`;
 }
@@ -392,9 +405,6 @@ function renderTraffic(t) {
 
 // ---- processing controls (pause + reindex) ---------------------------------
 
-let _reindexPollTimer = null;
-let _reindexWasProcessing = false;
-
 function _attachProcessingListeners() {
   const pauseBtn   = document.getElementById('pauseBtn');
   const reindexBtn = document.getElementById('reindexBtn');
@@ -430,77 +440,18 @@ async function togglePause() {
   }
 }
 
-function _setReindexStatus(text, cls) {
-  const el = document.getElementById('reindex-status');
-  if (!el) return;
-  el.innerHTML = text
-    ? `<span class="badge ${cls}">${text}</span>`
-    : '';
-}
-
-function _stopReindexPoll() {
-  if (_reindexPollTimer) {
-    clearInterval(_reindexPollTimer);
-    _reindexPollTimer = null;
-  }
-  _reindexWasProcessing = false;
-}
-
-function _startReindexPoll() {
-  _stopReindexPoll();
-  _reindexWasProcessing = false;
-  _reindexPollTimer = setInterval(async () => {
-    try {
-      const resp = await fetch(API_REINDEX_ST);
-      if (resp.status === 401 || resp.status === 403) {
-        _stopReindexPoll();
-        showAuthForm();
-        return;
-      }
-      if (!resp.ok) return;
-      const data = await resp.json();
-      const status = data.status;
-
-      if (status === 'queued') {
-        _setReindexStatus('В очереди…', 'badge-neutral');
-      } else if (status === 'processing') {
-        _reindexWasProcessing = true;
-        _setReindexStatus('Выполняется…', 'badge-warn');
-      } else {
-        // idle — если до этого было processing, значит завершилось
-        if (_reindexWasProcessing) {
-          _stopReindexPoll();
-          _setReindexStatus('Готово', 'badge-ok');
-          const reindexBtn = document.getElementById('reindexBtn');
-          if (reindexBtn) reindexBtn.disabled = false;
-          loadData();
-        } else {
-          // idle сразу — уже завершено или не запускалось
-          _stopReindexPoll();
-          _setReindexStatus('', '');
-          const reindexBtn = document.getElementById('reindexBtn');
-          if (reindexBtn) reindexBtn.disabled = false;
-        }
-      }
-    } catch { /* silent */ }
-  }, 3000);
-}
-
 async function startReindex() {
   const btn   = document.getElementById('reindexBtn');
   const msgEl = document.getElementById('processing-msg');
   if (!btn) return;
   btn.disabled = true;
   msgEl.textContent = '';
-  _setReindexStatus('', '');
 
   try {
     const resp = await fetch(API_REINDEX, { method: 'POST' });
     const data = await resp.json();
     if (resp.ok && data.ok) {
-      msgEl.textContent = 'Триггер реиндексации создан.';
-      msgEl.className = 'mgmt-msg ok';
-      _startReindexPoll();
+      await loadData();
     } else {
       msgEl.textContent = data.error || 'Ошибка запуска реиндексации.';
       msgEl.className = 'mgmt-msg err';
@@ -519,7 +470,7 @@ function renderPage(data) {
   const main = document.getElementById('main');
 
   const sections = [
-    { title: '1. Здоровье системы',              content: renderHealth(data.health) },
+    { title: '1. Здоровье системы',              content: renderHealth(data.health, data.reindex) },
     { title: '2. Безопасность (последние 24ч)',  content: renderSecurity(data.security) },
     { title: '3. Состояние дисков',              content: renderDisks(data.disks) },
     { title: '4. Динамика пополнения',           content: renderGrowth(data.growth) },

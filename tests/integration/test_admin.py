@@ -1,4 +1,5 @@
-# Version 1.6 - 24.06.2026 21:00:00 GMT
+# Version 1.7 - 23.09.2026 12:30:00 GMT
+# 1.7: состояние реиндексации — поле reindex в /api/admin/status; /api/admin/reindex-status удалён.
 # Integration tests: admin endpoints
 # Описание: In-process smoke-тесты для /api/admin/* и /admin.
 #           Проверяют: 401 без сессии, 401 для обычного пользователя,
@@ -15,7 +16,9 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -59,16 +62,19 @@ def admin_dirs(tmp_path, monkeypatch) -> dict[str, Path]:
         "data": tmp_path / "data",
         "go": tmp_path / "20_go",
         "processing": tmp_path / "30_processing",
+        "error": tmp_path / "40_error",
+        "done": tmp_path / "data.new",
     }
     for d in dirs.values():
         d.mkdir(parents=True, exist_ok=True)
     # DATA_DIRECTORY переехал в status_service
     monkeypatch.setattr(status_service_module, "DATA_DIRECTORY", str(dirs["data"]))
-    # UPLOAD_GO_DIRECTORY / UPLOAD_PROCESSING_DIRECTORY нужны и router (pause/reindex) и service (growth)
+    # Роутер создаёт триггер в 20_go; состояние считает status_service
     monkeypatch.setattr(admin_router_module, "UPLOAD_GO_DIRECTORY", str(dirs["go"]))
-    monkeypatch.setattr(admin_router_module, "UPLOAD_PROCESSING_DIRECTORY", str(dirs["processing"]))
     monkeypatch.setattr(status_service_module, "UPLOAD_GO_DIRECTORY", str(dirs["go"]))
     monkeypatch.setattr(status_service_module, "UPLOAD_PROCESSING_DIRECTORY", str(dirs["processing"]))
+    monkeypatch.setattr(status_service_module, "UPLOAD_ERROR_DIRECTORY", str(dirs["error"]))
+    monkeypatch.setattr(status_service_module, "UPLOAD_DONE_DIRECTORY", str(dirs["done"]))
     monkeypatch.setattr(admin_router_module, "ROOT_ADMIN_EMAIL", "")
     monkeypatch.setattr(session_helpers_module, "ROOT_ADMIN_EMAIL", "")
     return dirs
@@ -110,7 +116,6 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/api/admin/status"),
     ("GET", "/api/admin/admins"),
     ("GET", "/api/admin/settings"),
-    ("GET", "/api/admin/reindex-status"),
     ("GET", "/api/admin/users"),
 ]
 
@@ -218,12 +223,73 @@ class TestAdminAuthorized:
         r = admin_client.post("/api/admin/grant", json={"email": "not-an-email"})
         assert r.status_code == 400
 
-    def test_reindex_status_idle(self, admin_client, mailbox):
-        email = "admin6@admin.test"
-        self._login_admin(admin_client, email, mailbox)
-        r = admin_client.get("/api/admin/reindex-status")
+    def _reindex(self, admin_client) -> dict:
+        r = admin_client.get("/api/admin/status")
         assert r.status_code == 200
-        assert r.json().get("status") == "idle"
+        return r.json()["reindex"]
+
+    @staticmethod
+    def _touch(path: Path, mtime: int) -> None:
+        path.write_bytes(b"")
+        os.utime(path, (mtime, mtime))
+
+    def test_reindex_status_none(self, admin_client, mailbox):
+        self._login_admin(admin_client, "admin6@admin.test", mailbox)
+        assert self._reindex(admin_client) == {"status": "none", "started_at": None}
+
+    def test_reindex_status_queued(self, admin_client, mailbox, admin_dirs):
+        self._login_admin(admin_client, "admin6a@admin.test", mailbox)
+        self._touch(admin_dirs["go"] / "reindex.trigger", 1_700_000_000)
+        state = self._reindex(admin_client)
+        assert state["status"] == "queued"
+        assert state["started_at"] == datetime.fromtimestamp(1_700_000_000, tz=timezone.utc).isoformat()
+
+    def test_reindex_status_processing(self, admin_client, mailbox, admin_dirs):
+        self._login_admin(admin_client, "admin6b@admin.test", mailbox)
+        self._touch(admin_dirs["processing"] / "reindex.trigger", 1_700_000_100)
+        assert self._reindex(admin_client)["status"] == "processing"
+
+    def test_reindex_error_newer_than_done(self, admin_client, mailbox, admin_dirs):
+        self._login_admin(admin_client, "admin6c@admin.test", mailbox)
+        self._touch(admin_dirs["done"] / "reindex.trigger", 1_700_000_000)
+        self._touch(admin_dirs["error"] / "reindex.trigger", 1_700_000_500)
+        assert self._reindex(admin_client)["status"] == "error"
+
+    def test_reindex_done_newer_than_error(self, admin_client, mailbox, admin_dirs, admin_tlib_db):
+        self._login_admin(admin_client, "admin6d@admin.test", mailbox)
+        self._touch(admin_dirs["error"] / "reindex.trigger", 1_700_000_000)
+        self._touch(admin_dirs["done"] / "reindex.trigger", 1_700_000_500)
+        os.utime(admin_tlib_db, (1_700_000_800, 1_700_000_800))
+        assert self._reindex(admin_client)["status"] == "done"
+
+    def test_reindex_started_at_ignores_err_file(self, admin_client, mailbox, admin_dirs):
+        """reindex.err новее триггера, но started_at — время запуска."""
+        self._login_admin(admin_client, "admin6e@admin.test", mailbox)
+        started = 1_700_000_200
+        self._touch(admin_dirs["error"] / "reindex.trigger", started)
+        self._touch(admin_dirs["error"] / "reindex.err", started + 500)
+        state = self._reindex(admin_client)
+        assert state["status"] == "error"
+        assert state["started_at"] == datetime.fromtimestamp(started, tz=timezone.utc).isoformat()
+
+    def test_reindex_pending_db_swap_is_processing(self, admin_client, mailbox, admin_dirs, admin_tlib_db):
+        self._login_admin(admin_client, "admin6f@admin.test", mailbox)
+        self._touch(admin_dirs["done"] / "reindex.trigger", 1_700_000_500)
+        os.utime(admin_tlib_db, (1_700_000_800, 1_700_000_800))
+        (Path(admin_tlib_db).parent / "tlib-new.db").write_bytes(b"")
+        assert self._reindex(admin_client)["status"] == "processing"
+
+    def test_reindex_live_db_older_than_start_is_error(self, admin_client, mailbox, admin_dirs, admin_tlib_db):
+        self._login_admin(admin_client, "admin6g@admin.test", mailbox)
+        self._touch(admin_dirs["done"] / "reindex.trigger", 1_700_000_900)
+        os.utime(admin_tlib_db, (1_700_000_100, 1_700_000_100))
+        assert self._reindex(admin_client)["status"] == "error"
+
+    def test_post_reindex_returns_409_when_queued(self, admin_client, mailbox, admin_dirs):
+        self._login_admin(admin_client, "admin6h@admin.test", mailbox)
+        (admin_dirs["go"] / "reindex.trigger").write_bytes(b"")
+        r = admin_client.post("/api/admin/reindex")
+        assert r.status_code == 409
 
     def test_settings_valid_save_returns_ok(self, admin_client, mailbox):
         email = "admin7@admin.test"

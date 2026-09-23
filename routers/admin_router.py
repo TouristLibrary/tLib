@@ -1,6 +1,8 @@
-# Version 3.13 - 04.09.2026 14:25:00 GMT
+# Version 3.14 - 23.09.2026 12:30:00 GMT
 # Admin Router для TlibWebApp
 # Описание: Информационная страница администратора.
+# 3.14: POST /api/admin/reindex проверяет занятость через collect_reindex();
+#       GET /api/admin/reindex-status удалён — состояние в GET /api/admin/status.
 # 3.13: тема тестового письма использует MAIL_SUBJECT_PREFIX (домен из SITE_URL) вместо "[tLib]".
 # 3.12: GET/POST /api/admin/hidden-reports — список скрытых отчётов (см. services/hidden_reports.py);
 #           POST обновляет app.state.hidden_reports сразу после сохранения настройки.
@@ -48,11 +50,10 @@ from config import (
     ROOT_ADMIN_EMAIL,
     UPLOAD_GO_DIRECTORY,
     UPLOAD_PAUSE_DIRECTORY,
-    UPLOAD_PROCESSING_DIRECTORY,
     DIGEST_DEFAULT_SEND_TIME,
     MAIL_SUBJECT_PREFIX,
 )
-from services.admin.status_service import collect_health, collect_status
+from services.admin.status_service import collect_health, collect_reindex, collect_status
 from services.auth.auth_db import (
     delete_user_sessions,
     find_or_create_user,
@@ -211,15 +212,10 @@ def admin_reindex(request: Request):
     if not _get_admin_user(request):
         return _unauthorized()
 
+    if collect_reindex()["status"] in ("queued", "processing"):
+        return JSONResponse({"error": "Реиндексация уже выполняется"}, status_code=409)
+
     go_dir = Path(UPLOAD_GO_DIRECTORY)
-    processing_dir = Path(UPLOAD_PROCESSING_DIRECTORY)
-
-    for check_dir in (go_dir, processing_dir):
-        if check_dir.exists():
-            for f in check_dir.iterdir():
-                if f.is_file() and f.stem.lower() == "reindex":
-                    return JSONResponse({"error": "Реиндексация уже выполняется"}, status_code=409)
-
     try:
         go_dir.mkdir(parents=True, exist_ok=True)
         trigger = go_dir / "reindex.trigger"
@@ -229,32 +225,6 @@ def admin_reindex(request: Request):
     except Exception as e:
         app_logger.error(f"[admin] Ошибка создания reindex-триггера: {e}", exc_info=True)
         return JSONResponse({"error": "Internal error"}, status_code=500)
-
-
-@router.get("/api/admin/reindex-status")
-def admin_reindex_status(request: Request):
-    """
-    Возвращает текущий статус реиндексации.
-    Ищет файл reindex.* в data.up/20_go/ и data.up/30_processing/.
-    Только для авторизованных админов.
-    """
-    if not _get_admin_user(request):
-        return _unauthorized()
-
-    go_dir = Path(UPLOAD_GO_DIRECTORY)
-    processing_dir = Path(UPLOAD_PROCESSING_DIRECTORY)
-
-    if go_dir.exists():
-        for f in go_dir.iterdir():
-            if f.is_file() and f.stem.lower() == "reindex":
-                return JSONResponse({"status": "queued"})
-
-    if processing_dir.exists():
-        for f in processing_dir.iterdir():
-            if f.is_file() and f.stem.lower() == "reindex":
-                return JSONResponse({"status": "processing"})
-
-    return JSONResponse({"status": "idle"})
 
 
 @router.post("/api/admin/revoke")

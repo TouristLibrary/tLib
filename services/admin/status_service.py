@@ -1,4 +1,4 @@
-# Version 1.2 - 23.09.2026 09:30:00 GMT
+# Version 1.3 - 23.09.2026 12:30:00 GMT
 # Сервис сбора операционного статуса для панели администратора.
 # Описание: Функции сбора данных о здоровье системы, дисках, динамике пополнения,
 #           трафике и событиях безопасности. Вызываются из admin_router.
@@ -6,6 +6,7 @@
 # 1.1: UPLOAD_PAUSE_DIRECTORY перенесён в верхний блок from config import (единообразие, monkeypatch).
 # 1.2: добавлен collect_pcloud_sync() — статус зеркала data/ в pCloud по файлу-метке
 #      (внешняя systemd-служба, doc/DEPLOY.md), встроен в collect_health().
+# 1.3: collect_reindex() — состояние реиндексации по каталогу триггера reindex.*.
 
 import os
 import re
@@ -17,6 +18,7 @@ from pathlib import Path
 from config import (
     BACKUP_DIRECTORY,
     CACHE_DIRECTORY,
+    DATABASE_NEW_FILE,
     DATABASE_PATH,
     DATABASE_TABLE_NAME,
     DATA_DIRECTORY,
@@ -25,6 +27,7 @@ from config import (
     MAX_CACHE_SIZE,
     PCLOUD_SYNC_OK_FILENAME,
     PCLOUD_SYNC_STALE_HOURS,
+    REINDEX_TRIGGER_PREFIX,
     STATE_DB_WATCHER_TASK,
     STATE_FILE_WATCHER_TASK,
     STATE_STARTED_AT,
@@ -417,6 +420,68 @@ def collect_security() -> dict:
     }
 
 
+def _newest_reindex_trigger(directory: Path) -> Path | None:
+    """Самый новый файл reindex.* в каталоге. .err не учитывается: он пишется в момент сбоя."""
+    if not directory.is_dir():
+        return None
+    newest: Path | None = None
+    newest_mtime = -1.0
+    for f in directory.iterdir():
+        if not f.is_file() or f.suffix.lower() == ".err":
+            continue
+        if f.stem.lower() != REINDEX_TRIGGER_PREFIX:
+            continue
+        mtime = f.stat().st_mtime
+        if mtime >= newest_mtime:
+            newest = f
+            newest_mtime = mtime
+    return newest
+
+
+def _reindex_started_at(trigger: Path) -> str:
+    """Время запуска — mtime триггера: touch при создании, shutil.move его сохраняет."""
+    return datetime.fromtimestamp(trigger.stat().st_mtime, tz=timezone.utc).isoformat()
+
+
+def collect_reindex() -> dict:
+    """
+    Состояние реиндексации по расположению триггера reindex.*.
+
+    Очередь и обработка важнее итога. Итог — самый новый триггер из 40_error и data.new.
+    Для data.new «done» только если живая tlib.db собрана не раньше запуска:
+    файл базы меняется только заменой целиком.
+    """
+    queued = _newest_reindex_trigger(Path(UPLOAD_GO_DIRECTORY))
+    if queued is not None:
+        return {"status": "queued", "started_at": _reindex_started_at(queued)}
+
+    processing = _newest_reindex_trigger(Path(UPLOAD_PROCESSING_DIRECTORY))
+    if processing is not None:
+        return {"status": "processing", "started_at": _reindex_started_at(processing)}
+
+    error_trigger = _newest_reindex_trigger(Path(UPLOAD_ERROR_DIRECTORY))
+    done_trigger = _newest_reindex_trigger(Path(UPLOAD_DONE_DIRECTORY))
+    error_mtime = error_trigger.stat().st_mtime if error_trigger is not None else -1.0
+    done_mtime = done_trigger.stat().st_mtime if done_trigger is not None else -1.0
+
+    if error_trigger is None and done_trigger is None:
+        return {"status": "none", "started_at": None}
+
+    if error_trigger is not None and error_mtime >= done_mtime:
+        return {"status": "error", "started_at": _reindex_started_at(error_trigger)}
+
+    started_at = _reindex_started_at(done_trigger)
+    pending_db = Path(DATABASE_PATH).parent / DATABASE_NEW_FILE
+    if pending_db.is_file():
+        return {"status": "processing", "started_at": started_at}
+
+    live_db = Path(DATABASE_PATH)
+    if not live_db.is_file() or live_db.stat().st_mtime < done_mtime:
+        return {"status": "error", "started_at": started_at}
+
+    return {"status": "done", "started_at": started_at}
+
+
 def collect_status(app_state) -> dict:
     """Полный статус системы для /api/admin/status."""
     return {
@@ -426,4 +491,5 @@ def collect_status(app_state) -> dict:
         "disks":    collect_disks(),
         "growth":   collect_growth(),
         "traffic":  collect_traffic(app_state),
+        "reindex":  collect_reindex(),
     }
