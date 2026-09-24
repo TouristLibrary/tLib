@@ -38,7 +38,15 @@ PDF_TO_PNG_ALPHA: bool = False  # True для прозрачного фона
 
 ### 1. Триггеры конвертации
 
-Конвертация запускается автоматически при попадании PDF в кеш:
+**Гейт по жесту пользователя.** Headless-боты (облачные IP) исполняют наш JS, но не двигают мышь и не касаются экрана. Поэтому фронтенд не отправляет запросы, запускающие конвертацию, до первого жеста (`pointerdown`, `pointermove`, `wheel`, `touchstart`, `keydown`; `scroll` и программный `click()` не считаются) — промис `whenUserGesture()` из `js/utils/userGesture.js`:
+
+- карточка отчёта рендерится через `/prepare?probe=1` (без запуска); при `not_prepared` ставится `cacheWarmService.prepareCache`, который стартует на первом жесте — у человека раньше клика по вкладке;
+- `cacheWarmService.prepareCache` и `resolveFile` ждут жеста;
+- `resolvePdfViewer` ждёт жеста, если кэш не готов (нет `data-pages-total`), — чтобы лимит ретраев `/pages` у png-viewer отсчитывался от старта конвертации. Готовый кэш показывается сразу.
+
+Сервер жест не видит: `/prepare` без `probe` и `/resolve` по-прежнему запускают подготовку. Защита — от ботов, исполняющих наш фронтенд, а не от прямых запросов к API.
+
+Конвертация запускается при попадании PDF в кеш:
 
 #### Standalone PDF
 ```
@@ -79,7 +87,7 @@ png-viewer.js → GET /api/png/09582/09582-png/pages → [251 файл]
   
 buildViewersHtml → computePngDir() → data-png-dir="09582/09582-png" (без data-pages-total)
   ↓
-resolvePdfViewer() — activateViewerIframe немедленно
+resolvePdfViewer() — activateViewerIframe после первого жеста пользователя (whenUserGesture)
   ↓
 png-viewer.js → GET /api/png/09582/09582-png/pages → 404 (директория ещё создаётся)
   ↓
@@ -92,7 +100,7 @@ retry → ... → первые PNG появляются на диске
 GET /pages → [N файлов] → страницы отображаются прогрессивно
 ```
 
-Для standalone PDF: `checkFileAvailable` вызывается так же, как для ZIP — `/prepare` запускает конвертацию и возвращает `pages`/`png_dir` когда кеш готов.
+Для standalone PDF: `checkFileAvailable` вызывается так же, как для ZIP — `/prepare?probe=1` возвращает `pages`/`png_dir`, когда кеш готов, а конвертацию запускает `prepareCache` после жеста.
 
 **Pre-scan** (`convert_pdfs`) создаёт пустые PNG-директории (`mkdir`) до начала рендеринга — это гарантирует, что `/pages` вернёт `[]` (а не 404) как только pre-scan завершится.
 
@@ -269,13 +277,17 @@ routers/cache_router.py             # /prepare и /resolve endpoints
 │
 js/modules/ui/results/single.js     # handleSingleResult:
 │   checkFileAvailable() вызывается для всех типов (ZIP и standalone PDF)
+│     /prepare?probe=1 (без запуска); not_prepared → prepareCache (ждёт жеста)
 │   prepareFiles из /prepare → pages/png_dir пробрасываются в buildViewersHtml
+│
+js/utils/userGesture.js             # whenUserGesture(): промис первого жеста пользователя
+js/services/cacheWarmService.js     # prepareCache/resolveFile ждут whenUserGesture()
 │
 js/modules/ui/results/viewers/
 ├── pdfViewer.js                    # Вьюер без resolve round-trip
 │     computePngDir() → детерминированный png_dir из archiveName + pdfName
 │     buildViewersHtml(): data-png-dir + data-pages-total вшиваются в HTML
-│     resolvePdfViewer(): читает data-атрибуты → activateViewerIframe (без fetch)
+│     resolvePdfViewer(): без data-pages-total ждёт жеста → activateViewerIframe (без fetch)
 │     buildPngViewerUrl(..., pagesTotal) → hash: dir=...&page=...&total=251
 └── viewerHelpers.js                # resolveAndWait используется для image/track, не PDF
 │

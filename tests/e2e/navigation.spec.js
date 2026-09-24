@@ -33,6 +33,9 @@ test.describe('Navigation', () => {
     await expect(page.locator('.tab-button.active[data-tab="tab-1"]')).toBeVisible({ timeout: 15000 });
     await expect(page.locator('#tab-1 .tab-link[data-pdf-url]').first()).toBeVisible({ timeout: 15000 });
 
+    // Без жеста png-viewer для неготового кэша не активируется — PNG не грузятся и проверка ниже холостая
+    await page.mouse.move(100, 100);
+
     // Регрессия: URL не должен «съезжать» с p=1 из-за scroll-echo / reflow при дозагрузке PNG
     await expect.poll(
       () => new URL(page.url()).hash,

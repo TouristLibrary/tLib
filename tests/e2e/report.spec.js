@@ -16,6 +16,33 @@ test.describe('Report', () => {
     await expect(page.locator('.tab-link[data-image-url]').first()).toBeVisible({ timeout: 10000 });
   });
 
+  // Headless-боты исполняют JS, но не дают жестов: без жеста фронтенд не должен
+  // отправлять запросы, запускающие конвертацию (/prepare без probe и /resolve).
+  test('Без жеста пользователя конвертация не запускается @security', async ({ page }) => {
+    skipIfSeedMissing(test, '1-TST');
+
+    /** @type {string[]} */
+    const starters = [];
+    page.on('request', (req) => {
+      const url = req.url();
+      if (req.method() !== 'POST' || !url.includes('/api/cache/')) return;
+      if (url.includes('/resolve') || (url.includes('/prepare') && !url.includes('probe=1'))) {
+        starters.push(url);
+      }
+    });
+
+    await page.goto('/?1-TST#tab=pdf', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator('.tab-button.active[data-tab="tab-1"]')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('#tab-1 .tab-link[data-pdf-url]').first()).toBeVisible({ timeout: 15000 });
+
+    await page.waitForTimeout(5000);
+    expect(starters, starters.join('\n')).toEqual([]);
+
+    await page.mouse.move(100, 100);
+    await page.mouse.move(200, 200);
+    await expect.poll(() => starters.length, { timeout: 10000 }).toBeGreaterThan(0);
+  });
+
   test('Очистка формы', async ({ page }) => {
     await gotoMainReady(page);
     await page.locator('input[name="Шифр"]').fill('123');

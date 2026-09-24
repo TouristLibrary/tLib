@@ -1,10 +1,13 @@
-// Version 2.2 - 20.02.2026
+// Version 2.3 - 24.09.2026
 // Описание: Сервис для подготовки кеша архивов (eager caching v2).
 //           prepareCache() - fire-and-forget запуск подготовки кеша при клике на таб.
 //           resolveFile() - единый resolve для всех типов контента (pdf, image, track, all_tracks).
+// 2.3: оба метода ждут первого жеста пользователя (whenUserGesture) — headless-боты,
+//      исполняющие JS, не запускают конвертацию (resolve тоже её запускает, шаг 4).
 
 import { API } from '../config/api.config.js';
 import { fetchJson } from '../utils/fetchUtils.js';
+import { whenUserGesture } from '../utils/userGesture.js';
 
 /**
  * Сервис для подготовки и resolve кеша
@@ -33,7 +36,8 @@ class CacheWarmService {
             return this._warmingInProgress.get(key);
         }
         
-        const promise = fetchJson(`${API.CACHE_BASE}/${encodeURIComponent(archiveName)}/prepare`, { method: 'POST' })
+        const promise = whenUserGesture()
+            .then(() => fetchJson(`${API.CACHE_BASE}/${encodeURIComponent(archiveName)}/prepare`, { method: 'POST' }))
             .catch(e => {
                 console.error(`CacheWarmService: prepare error for ${archiveName}:`, e);
                 return { status: 'error' };
@@ -59,6 +63,7 @@ class CacheWarmService {
      * @returns {Promise<Object>} - результат resolve
      */
     async resolveFile(archiveName, { kind, path = '' }) {
+        await whenUserGesture();
         try {
             return await fetchJson(
                 `${API.CACHE_BASE}/${encodeURIComponent(archiveName)}/resolve`,

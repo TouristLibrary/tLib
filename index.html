@@ -1,5 +1,5 @@
 <!--
-  Version 2.30 - 18.09.2026 07:50:00 GMT
+  Version 2.31 - 24.09.2026 19:45:00 GMT
 
   Одностраничный интерфейс веб-приложения tLib: содержит разметку панели поиска, таблицы результатов,
   футера и встроенный SVG-спрайт иконок. Управление UI и логикой поиска выполняется через модульные
@@ -10,6 +10,7 @@
   #errorMsg; убрана дублирующаяся строка в подсказке селекта ДопШифр.
   2.29: обновлена дата сборки в футере (15.07.2026 -> 03.09.2026).
   2.30: слот #siteNotice в футере левой колонки (текст с сервера, не в git).
+  2.31: modulepreload для js/utils/userGesture.js (гейт конвертации по жесту пользователя).
 -->
 <!DOCTYPE html>
 <html lang="ru" itemscope itemtype="https://schema.org/WebSite">
@@ -43,6 +44,7 @@
     <link rel="modulepreload" href="js/utils/fetchUtils.js">
     <link rel="modulepreload" href="js/utils/urlUtils.js">
     <link rel="modulepreload" href="js/utils/sanitize.js">
+    <link rel="modulepreload" href="js/utils/userGesture.js">
     <link rel="modulepreload" href="js/config/api.config.js">
     <link rel="modulepreload" href="js/config/ui.config.js">
     <link rel="modulepreload" href="js/config/messages.config.js">

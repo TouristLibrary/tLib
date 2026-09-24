@@ -1,4 +1,4 @@
-// Version 3.4 - 10.07.2026 - fileStatus 'hidden' для отчётов, скрытых администратором
+// Version 3.5 - 24.09.2026 - checkFileAvailable через /prepare?probe=1: рендер карточки не запускает конвертацию, прогрев — после жеста
 // Описание: Оркестратор единственного результата поиска. Делегирует рендеринг/обработку
 //           viewer'ов (PDF/Треки/Изображения) соответствующим стратегиям через реестр.
 //           Применяет escapeHtml для защиты от DOM-XSS при вставке данных из БД.
@@ -50,7 +50,9 @@ const VIEWER_BY_TAB = {
 const FILE_CHECK_TIMEOUT_MS = 3000;
 
 /**
- * Запускает подготовку кеша через /api/cache/.../prepare и возвращает статус + список файлов.
+ * Проверяет наличие файла через /api/cache/.../prepare?probe=1 и возвращает статус + список файлов.
+ * Проба не запускает подготовку кеша: иначе каждый headless-бот, открывший карточку,
+ * запускал бы конвертацию. Для неготового кэша ставит prepareCache, который ждёт жеста.
  * Использует собственный AbortController с коротким таймаутом (без retry) для быстрой проверки.
  * @param {string} localFileName - имя файла без расширения (e.g. "02597-TLIB")
  * @param {number} [timeoutMs] - таймаут в мс
@@ -60,11 +62,15 @@ async function checkFileAvailable(localFileName, timeoutMs = FILE_CHECK_TIMEOUT_
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-        const url = `${CONSTANTS.API.CACHE_BASE}/${encodeURIComponent(localFileName)}/prepare`;
+        const url = `${CONSTANTS.API.CACHE_BASE}/${encodeURIComponent(localFileName)}/prepare?probe=1`;
         const resp = await fetch(url, { method: 'POST', signal: controller.signal });
         const data = await resp.json();
         const files = data.files || null;
-        if (data.status === 'ready') return { status: 'available', files };
+        if (data.status === 'not_prepared') {
+            // Прогрев стартует с первым жестом: у человека — раньше клика по вкладке, у бота — никогда
+            cacheWarmService.prepareCache(localFileName);
+        }
+        if (data.status === 'ready' || data.status === 'not_prepared') return { status: 'available', files };
         if (data.status === 'started' || data.status === 'already_preparing') return { status: 'preparing', files };
         return { status: 'not_found', files: null };
     } catch {

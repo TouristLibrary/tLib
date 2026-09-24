@@ -122,6 +122,7 @@ TlibWebApp/
 │   ├── config/             # Конфигурация
 │   ├── core/               # Состояние приложения
 │   ├── modules/            # Модули (search, ui, redirect, sidebarAuth, siteNotice, fileUtils)
+│   ├── utils/              # Утилиты (fetchUtils, sanitize, userGesture — конвертация PDF только после жеста, см. PDF_TO_PNG.md)
 │   └── services/           # Сетевые сервисы: authService (/api/auth/*), serverConfigService, referenceListsService, archiveService, cacheWarmService
 │
 ├── data/                   # Архивы отчетов

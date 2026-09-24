@@ -1,10 +1,11 @@
-// Version 1.2 - 20.02.2026 - selectLink: boilerplate заменён на prepareViewerSwitch
+// Version 1.3 - 24.09.2026 - png-viewer для неготового кэша активируется после жеста пользователя
 // Описание: Viewer-стратегия для PDF (PNG viewer). Реализует контракт viewer-стратегии:
 //   buildFileListHtml, buildViewersHtml, setupHandlers, selectLink, autoLoad,
 //   applyHashState, getHashStateOnTabSwitch.
 
 import { CONSTANTS, TAB_IDS, TAB_TOKENS } from '../../../../config/constants.js';
 import { escapeAttribute } from '../../../../utils/sanitize.js';
+import { whenUserGesture } from '../../../../utils/userGesture.js';
 import {
     parseViewStateFromHash, replaceUrlHash,
     setupPdfPageSyncListener, getSavedPdfPage,
@@ -12,7 +13,7 @@ import {
 import {
     setActiveLink, setupClickDelegates, findLinkByDataset,
     safeFocusElement, scheduleHeightAdjust, adjustActiveViewerHeight,
-    prepareFileLink, prepareLinkContext, buildViewersBlockHtml,
+    prepareFileLink, prepareLinkContext, buildViewersBlockHtml, spinnerPlaceholderHtml,
     showViewerError,
     activateViewerIframe,
     EXTERNAL_SVG, prepareViewerSwitch,
@@ -109,7 +110,11 @@ function replacePlaceholderWithViewer(container, pngDir, page, pagesTotal) {
  * @param {HTMLElement} container
  * @param {string} pdfName
  */
-function resolvePdfViewer(container, pdfName) {
+async function resolvePdfViewer(container, pdfName) {
+    // Без data-pages-total кэш не готов: конвертация стартует только после жеста
+    // (cacheWarmService), а лимит ретраев /pages у png-viewer должен отсчитываться от её старта.
+    if (!container.dataset.pagesTotal) await whenUserGesture();
+
     const iframe = container.querySelector('.png-viewer');
     if (iframe && iframe.src && !iframe.src.includes('about:blank') && iframe.src !== '') {
         return;
@@ -233,6 +238,7 @@ export function buildViewersHtml(files, { archiveName }) {
             const pngDir = file.png_dir || computePngDir(archiveName, file.name);
             const ptAttr = file.pages ? ` data-pages-total="${file.pages}"` : '';
             return `<div class="viewer-container" data-pdf-name="${escapedName}" data-archive-name="${escapedArchive}" data-png-dir="${escapeAttribute(pngDir)}"${ptAttr}${displayStyle}>
+                ${spinnerPlaceholderHtml('viewer-loading')}
                 <iframe class="viewer png-viewer" allowfullscreen style="display:none"></iframe>
             </div>`;
         },
