@@ -7,6 +7,7 @@
 # 1.1: усилены ассерты test_resolve_empty_path_not_rejected и
 #      test_resolve_valid_nested_path_not_rejected (stub-zip -> авто-триггер prepare -> 200).
 # 1.2: тест атрибуции IP/endpoint в _validate_archive_name (spy на security_logger).
+# 1.3: /prepare?probe=1 — проба не запускает подготовку кеша (TestCachePrepareProbe).
 
 from __future__ import annotations
 
@@ -116,6 +117,47 @@ class TestCacheArchiveNameTraversal:
         """Валидное имя архива не должно отвергаться на этапе валидации (вернёт not_found, не 400)."""
         resp = app_client.post("/api/cache/00001-TST/prepare")
         assert resp.status_code != 400, f"валидное имя отвергнуто: {resp.text}"
+
+
+# ---------------------------------------------------------------------------
+# cache_router: /prepare?probe=1 не запускает подготовку
+# ---------------------------------------------------------------------------
+
+
+class TestCachePrepareProbe:
+    """Проба нужна для рендера карточки: headless-боты не должны запускать конвертацию.
+
+    TestClient выполняет BackgroundTasks синхронно после ответа, поэтому
+    отсутствие директории кеша после запроса доказывает, что задача не ставилась.
+    """
+
+    def test_probe_zip_returns_not_prepared_without_starting(self, app_client, tmp_dirs):
+        _make_archive(tmp_dirs["data"], "00001-TST")
+        resp = app_client.post("/api/cache/00001-TST/prepare?probe=1")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "not_prepared"
+        assert data["files"] == []
+        assert not (tmp_dirs["cache"] / "00001-TST").exists(), "проба запустила подготовку кеша"
+
+    def test_probe_standalone_pdf_returns_not_prepared_without_starting(self, app_client, tmp_dirs):
+        (tmp_dirs["data"] / "00002-TST.pdf").write_bytes(b"%PDF-1.4\n")
+        resp = app_client.post("/api/cache/00002-TST/prepare?probe=1")
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"status": "not_prepared"}
+        assert not (tmp_dirs["cache"] / "00002-TST").exists(), "проба запустила конвертацию PDF"
+
+    def test_without_probe_still_starts(self, app_client, tmp_dirs):
+        """Без probe поведение прежнее — старый JS в кэше браузеров продолжает работать."""
+        _make_archive(tmp_dirs["data"], "00001-TST")
+        resp = app_client.post("/api/cache/00001-TST/prepare")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "started"
+
+    def test_probe_missing_archive_returns_not_found(self, app_client, tmp_dirs):
+        resp = app_client.post("/api/cache/00003-TST/prepare?probe=1")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "not_found"
 
 
 # ---------------------------------------------------------------------------

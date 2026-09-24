@@ -1,8 +1,11 @@
-# Version 2.3 - 10.07.2026 09:45:00 GMT
+# Version 2.4 - 24.09.2026 19:40:00 GMT
 # Cache Router для TlibWebApp
 # Описание: API endpoints для eager caching с per-file readiness.
 #           POST /prepare - fire-and-forget запуск подготовки кеша.
 #           POST /resolve - единый resolve для ВСЕХ типов (pdf, image, track, all_tracks).
+# 2.4: /prepare?probe=1 — проба без запуска подготовки (статус not_prepared + TOC).
+#      Карточка отчёта рендерится через пробу, чтобы headless-боты, исполняющие JS,
+#      не запускали конвертацию; реальный запуск — только после жеста пользователя.
 # 2.3: _is_hidden — скрытые отчёты (app.state.hidden_reports) не кешируются: /prepare, /resolve
 #      и /contents отвечают как для отсутствующего файла (not_found/404).
 # 2.1: _validate_archive_name и /resolve body.path переведены на канонический
@@ -196,13 +199,16 @@ def _check_file_on_disk(cache_dir: Path, archive_name: str, body: ResolveRequest
 # ============================================================================
 
 @router.post("/{archive_name}/prepare")
-async def prepare_cache(archive_name: str, request: Request, background_tasks: BackgroundTasks):
+async def prepare_cache(archive_name: str, request: Request, background_tasks: BackgroundTasks, probe: bool = False):
     """
     API: fire-and-forget запуск подготовки кеша.
     Ищет и ZIP и standalone PDF.
 
+    probe=True — те же проверки, но подготовка не запускается: вместо "started"
+    возвращается "not_prepared". Нужна для рендера карточки без запуска конвертации.
+
     Returns:
-        {"status": "ready" | "already_preparing" | "started" | "not_found",
+        {"status": "ready" | "already_preparing" | "started" | "not_prepared" | "not_found",
          "files": [...]}   # только для ZIP; содержимое из TOC или meta
     """
     try:
@@ -251,12 +257,18 @@ async def prepare_cache(archive_name: str, request: Request, background_tasks: B
             if is_preparing(archive_name):
                 return JSONResponse({"status": CACHE_STATUS_ALREADY_PREPARING, "files": toc_files})
 
+            if probe:
+                return JSONResponse({"status": CACHE_STATUS_NOT_PREPARED, "files": toc_files})
+
             background_tasks.add_task(prepare_archive_cache, archive_name, zip_path, collector)
             return JSONResponse({"status": CACHE_STATUS_STARTED, "files": toc_files})
         else:
             # Standalone PDF — files не включаем (фронтенд не использует)
             if is_preparing(archive_name):
                 return JSONResponse({"status": CACHE_STATUS_ALREADY_PREPARING})
+
+            if probe:
+                return JSONResponse({"status": CACHE_STATUS_NOT_PREPARED})
 
             background_tasks.add_task(convert_standalone_pdf, pdf_path, archive_name, collector)
             return JSONResponse({"status": CACHE_STATUS_STARTED})
