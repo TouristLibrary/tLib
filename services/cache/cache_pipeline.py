@@ -1,14 +1,19 @@
-# Version 2.0 - 08.02.2026 00:00:00 GMT
+# Version 2.1 - 25.09.2026 12:00:00 GMT
 # Cache Pipeline для TlibWebApp
 # Описание: Конвертационные шаги подготовки кеша.
 #           Извлечение, конвертация PDF/изображений/GPS, запись meta.
 #           Вызывается из cache_prepare_service.
+# 2.1: конвертация PDF, пока смотрят — PDF на паузе пишется в meta со status=partial
+#      и pages_done; хелперы докрутки extract_single_member, find_pdf_entry,
+#      first_partial_png_dir, update_meta_file_entry. convert_pdfs сопоставляет пути в posix,
+#      как convert_images, — иначе на Windows вложенные PDF не находились в files_info.
 
 import shutil
 import zipfile
 import asyncio
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Optional
 
 # Импорт конфигурации
 from config import (
@@ -22,7 +27,9 @@ from config import (
     CACHE_META_FILENAME,
     CACHE_WORK_DIRNAME,
     GEO_ARCHIVE_SUFFIX,
+    PNG_PAGES_TOTAL_FILENAME,
     CACHE_STATUS_ERROR,
+    CACHE_FILE_STATUS_PARTIAL,
     CACHE_STAGE_EXTRACTING, CACHE_STAGE_CONVERTING,
 )
 
@@ -34,6 +41,7 @@ from services.file_service import decode_zip_filename, is_macos_metadata_file
 from .cache_service import (
     get_cache_dir,
     get_png_dir_path,
+    read_meta,
     atomic_write_json
 )
 
@@ -157,6 +165,39 @@ async def extract_files(archive_name: str, zip_path: Path, cache_dir: Path,
     return files_info
 
 
+async def extract_single_member(zip_path: Path, zip_member: str, work_dir: Path) -> Path:
+    """
+    Извлекает один файл ZIP в work_dir — для докрутки PDF, поставленного на паузу.
+    _work/ после prepare удаляется: перераспаковать один файл дешевле, чем хранить
+    исходник всё время жизни кеша.
+
+    Args:
+        zip_path: путь к ZIP
+        zip_member: декодированное имя файла внутри архива (zip_path записи в _meta.json)
+        work_dir: куда извлечь (файл ляжет в work_dir / zip_member)
+
+    Returns:
+        Путь к извлечённому файлу
+
+    Raises:
+        FileNotFoundError: файла нет в архиве
+    """
+    def do_extract() -> Path:
+        # Имя в ZIP бывает в CP866/CP1251 — оригинальное находим через TOC с тем же декодированием
+        entry = next((e for e in read_zip_toc(zip_path) if e["zip_path"] == zip_member), None)
+        if entry is None:
+            raise FileNotFoundError(f"ZIP member not found: {zip_member}")
+        target_path = work_dir / zip_member
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            with zf.open(entry["original_filename"]) as src, open(target_path, 'wb') as dst:
+                shutil.copyfileobj(src, dst)
+        return target_path
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, do_extract)
+
+
 async def convert_gps_tracks(archive_name: str, zip_path: Path, cache_dir: Path,
                             write_status_callback) -> dict:
     """
@@ -230,18 +271,18 @@ async def convert_pdfs(archive_name: str, zip_path: Path, cache_dir: Path,
     # png-viewer может открыть директорию сразу и знать pages_total для заглушек.
     from services.conversion.pdf_to_png_service import count_pdf_pages
     for pdf_path in pdfs:
-        rel = str(pdf_path.relative_to(work_dir))
+        rel = pdf_path.relative_to(work_dir).as_posix()
         png_dir_pre = get_png_dir_path(archive_name, rel)
         png_dir_pre.mkdir(parents=True, exist_ok=True)
         pages = count_pdf_pages(pdf_path)
         if pages > 0:
-            (png_dir_pre / "_pages_total.txt").write_text(str(pages))
+            (png_dir_pre / PNG_PAGES_TOTAL_FILENAME).write_text(str(pages))
     
     for idx, pdf_path in enumerate(pdfs, start=1):
         try:
             # Получаем относительный путь внутри _work/
             rel_path = pdf_path.relative_to(work_dir)
-            rel_path_str = str(rel_path)
+            rel_path_str = rel_path.as_posix()  # posix-слэши совпадают с zip_path
             
             # Находим запись в files_info
             file_entry = next((f for f in files_info if f["zip_path"] == rel_path_str), None)
@@ -280,13 +321,18 @@ async def convert_pdfs(archive_name: str, zip_path: Path, cache_dir: Path,
                 file_entry["error"] = str(result)
                 continue
             
-            page_count, total_size = result
+            pages_done, page_count, _total_size, completed = result
             
             # Обновляем file_entry с успешным результатом
-            file_entry["png_dir"] = str(Path(rel_path_str).parent / f"{Path(rel_path_str).stem}-png")
+            file_entry["png_dir"] = (Path(rel_path_str).parent / f"{Path(rel_path_str).stem}-png").as_posix()
             file_entry["pages"] = page_count
+            if not completed:
+                # Пауза — не ошибка: кеш валиден, недостающие страницы докрутит
+                # resume_pdf_conversion при следующем просмотре
+                file_entry["status"] = CACHE_FILE_STATUS_PARTIAL
+                file_entry["pages_done"] = pages_done
             
-            # Удаляем temp PDF
+            # Удаляем temp PDF (докрутка перераспакует его из ZIP)
             try:
                 pdf_path.unlink(missing_ok=True)
             except Exception:
@@ -296,7 +342,7 @@ async def convert_pdfs(archive_name: str, zip_path: Path, cache_dir: Path,
             app_logger.warning(f"Error converting PDF {pdf_path.name}: {e}")
             # Находим запись и помечаем как error
             rel_path = pdf_path.relative_to(work_dir)
-            file_entry = next((f for f in files_info if f["zip_path"] == str(rel_path)), None)
+            file_entry = next((f for f in files_info if f["zip_path"] == rel_path.as_posix()), None)
             if file_entry:
                 file_entry["status"] = CACHE_STATUS_ERROR
                 file_entry["error"] = str(e)
@@ -479,6 +525,7 @@ async def write_meta(archive_name: str, zip_path: Path, cache_dir: Path,
         kind = file_info.get("kind", "other")
         
         # Safety net: PDF без png_dir и без status=error -> помечаем как error
+        # (partial всегда с png_dir и в статистике считается как pdf)
         if kind == "pdf" and "png_dir" not in file_info and file_info.get("status") != CACHE_STATUS_ERROR:
             file_info["status"] = CACHE_STATUS_ERROR
             file_info["error"] = "PDF conversion was skipped (no png_dir produced)"
@@ -522,7 +569,8 @@ async def write_meta_standalone_pdf(
     archive_name: str,
     pdf_path: Path,
     png_dir: Path,
-    pages: int
+    pages: int,
+    pages_done: Optional[int] = None
 ) -> None:
     """
     Записывает _meta.json для standalone PDF.
@@ -532,9 +580,21 @@ async def write_meta_standalone_pdf(
         pdf_path: путь к PDF
         png_dir: путь к PNG директории
         pages: количество страниц
+        pages_done: число готовых страниц, если конвертация на паузе (None — завершена)
     """
     cache_dir = get_cache_dir(archive_name)
     stat = pdf_path.stat()
+    
+    file_entry = {
+        "zip_path": pdf_path.name,
+        "kind": "pdf",
+        "png_dir": png_dir.name,
+        "pages": pages,
+        "size": stat.st_size
+    }
+    if pages_done is not None:
+        file_entry["status"] = CACHE_FILE_STATUS_PARTIAL
+        file_entry["pages_done"] = pages_done
     
     meta = {
         "version": 1,
@@ -545,15 +605,7 @@ async def write_meta_standalone_pdf(
         },
         "prepared_at": datetime.now(timezone.utc).isoformat(),
         "cache_size_bytes": _compute_cache_dir_size(cache_dir),
-        "files": [
-            {
-                "zip_path": pdf_path.name,
-                "kind": "pdf",
-                "png_dir": png_dir.name,
-                "pages": pages,
-                "size": stat.st_size
-            }
-        ],
+        "files": [file_entry],
         "stats": {
             "total": 1,
             "pdf": 1,
@@ -613,3 +665,69 @@ async def write_meta_with_error(archive_name: str, pdf_path: Path, error: str) -
     atomic_write_json(meta_path, meta)
     
     app_logger.debug(f"Error meta written for {archive_name}: {error}")
+
+
+# ============================================================================
+# ДОКРУТКА PDF: ЗАПИСИ _meta.json
+# ============================================================================
+
+def find_pdf_entry(meta: dict, png_dir_rel: str) -> Optional[dict]:
+    """
+    Находит запись PDF в meta по PNG-директории.
+
+    Args:
+        meta: словарь _meta.json
+        png_dir_rel: путь PNG-директории внутри кеша архива (posix, как в URL /api/png/...)
+
+    Returns:
+        Запись из meta["files"] или None
+    """
+    for entry in meta.get("files", []):
+        if entry.get("kind") == "pdf" and entry.get("png_dir") \
+                and Path(entry["png_dir"]).as_posix() == png_dir_rel:
+            return entry
+    return None
+
+
+def first_partial_png_dir(meta: dict) -> Optional[str]:
+    """
+    PNG-директория первого PDF на паузе (status=partial) или None.
+    Порядок — как в meta (порядок файлов в архиве); приоритета между PDF нет.
+    """
+    for entry in meta.get("files", []):
+        if entry.get("status") == CACHE_FILE_STATUS_PARTIAL and entry.get("png_dir"):
+            return Path(entry["png_dir"]).as_posix()
+    return None
+
+
+def update_meta_file_entry(archive_name: str, png_dir_rel: str, fields: dict) -> Optional[dict]:
+    """
+    Обновляет запись PDF в _meta.json после докрутки: перечитывает meta, применяет fields,
+    пересчитывает cache_size_bytes (LRU видит реальный размер папки) и пишет атомарно.
+    Вызывается под lock архива — конкурентных записей meta нет.
+
+    Args:
+        archive_name: имя архива
+        png_dir_rel: путь PNG-директории внутри кеша архива (posix)
+        fields: поля записи; значение None удаляет поле
+
+    Returns:
+        Обновлённая meta или None, если meta или записи нет
+    """
+    meta = read_meta(archive_name)
+    if meta is None:
+        return None
+    entry = find_pdf_entry(meta, png_dir_rel)
+    if entry is None:
+        return None
+
+    for key, value in fields.items():
+        if value is None:
+            entry.pop(key, None)
+        else:
+            entry[key] = value
+
+    cache_dir = get_cache_dir(archive_name)
+    meta["cache_size_bytes"] = _compute_cache_dir_size(cache_dir)
+    atomic_write_json(cache_dir / CACHE_META_FILENAME, meta)
+    return meta

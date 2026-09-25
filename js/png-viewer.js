@@ -1,4 +1,5 @@
-// Version 3.3 - 27.05.2026 - userInteracted gate перенесён в onScroll
+// Version 3.4 - 25.09.2026 - конвертация PDF, пока смотрят: /pages?want= (heartbeat + запрошенная
+//   страница), страницы появляются не по порядку — список собирается и опрашивается по имени файла
 // PNG Viewer - ESM модуль для просмотра PNG страниц
 // 
 // АРХИТЕКТУРА:
@@ -12,8 +13,10 @@
 // 3. Слушать событие 'pngviewer-page-change' для синхронизации URL
 // 
 // API ENDPOINTS (настраиваются через options.apiBase):
-// - GET {apiBase}/{path}/pages - список страниц в директории
-// 
+// - GET {apiBase}/{path}/pages?want=N - список страниц в директории. Запрос — heartbeat
+//   просмотра: сервер конвертирует PDF, только пока вьюер опрашивает /pages, и первой
+//   рендерит страницу want (1-based), которую сейчас показывает вьюер
+//
 // СВЯЗЬ С PDF_TO_PNG_SERVICE:
 // - PNG директории создаются автоматически при кешировании PDF
 // - Паттерн именования: {stem}-png/ (например, report-png/)
@@ -61,6 +64,7 @@ class PngViewer {
         this.zoom = CONFIG.DEFAULT_ZOOM; // Текущий масштаб
         this.rotations = new Map(); // Map<pageIndex, degrees>
         this.userInteracted = false; // true после первого явного действия пользователя
+        this.diskPageNames = new Set(); // Имена PNG, уже найденных на диске (опрос во время конвертации)
 
         // ИНТЕГРАЦИЯ: Привязываем DOM элементы (может быть из container)
         this._bindDomElements();
@@ -103,14 +107,48 @@ class PngViewer {
         }
     }
 
+    /**
+     * URL листинга страниц. Запрос — heartbeat просмотра: want (1-based) — страница,
+     * которую сейчас показывает вьюер; сервер рендерит её первой.
+     * @param {string} dirPath
+     * @param {number} want
+     * @returns {string}
+     */
+    _pagesUrl(dirPath, want) {
+        // Encode each path segment separately to preserve slashes
+        const encodedPath = dirPath.split('/').map(p => encodeURIComponent(p)).join('/');
+        return `${this.options.apiBase}/${encodedPath}/pages?want=${want}`;
+    }
+
+    /**
+     * Собирает список страниц 0..total-1 по имени файла: запись с диска, если PNG уже готов,
+     * иначе заглушка с тем же URL (изображение подгрузится ретраями по мере готовности).
+     * Страницы появляются не по порядку (первой рендерится запрошенная), поэтому подставлять
+     * ответ сервера по позиции нельзя: при диске [1, 2, 71] третья заглушка получила бы страницу 71.
+     * @param {string} dirPath
+     * @param {Array<{name: string, url: string, size: number}>} diskPages
+     * @param {number} total
+     * @returns {Array<{name: string, url: string, size: number}>}
+     */
+    _buildPageList(dirPath, diskPages, total) {
+        const byName = new Map(diskPages.map(p => [p.name, p]));
+        const stem = dirPath.split('/').pop().replace(/-png$/, '');
+        const baseUrl = diskPages.length > 0
+            ? diskPages[0].url.substring(0, diskPages[0].url.lastIndexOf('/') + 1)
+            : `/cache/${dirPath}/`;
+        const pages = [];
+        for (let i = 0; i < total; i++) {
+            const name = `${stem}_${String(i + 1).padStart(4, '0')}.png`;
+            pages.push(byName.get(name) || { name, url: `${baseUrl}${name}`, size: 0 });
+        }
+        return pages;
+    }
+
     async loadPages(dirPath, retryCount = 0) {
         const MAX_RETRIES = 15;
         const RETRY_DELAY_MS = 2000;
         try {
-            // Encode each path segment separately to preserve slashes
-            const parts = dirPath.split('/');
-            const encodedPath = parts.map(p => encodeURIComponent(p)).join('/');
-            const response = await fetch(`${this.options.apiBase}/${encodedPath}/pages`);
+            const response = await fetch(this._pagesUrl(dirPath, (this.options.initialPage || 0) + 1));
 
             if (!response.ok) {
                 if (retryCount < MAX_RETRIES) {
@@ -120,9 +158,9 @@ class PngViewer {
                 }
                 throw new Error('Failed to load pages');
             }
-            
+
             const data = await response.json();
-            this.pages = data.pages || [];
+            const diskPages = data.pages || [];
 
             // Обновляем pagesTotal из ответа сервера (pre-scan маркер), если он больше текущего
             if (data.pages_total && data.pages_total > (this.options.pagesTotal || 0)) {
@@ -130,7 +168,7 @@ class PngViewer {
             }
 
             // Директория пуста и нет known total — конвертация ещё не дошла до первой страницы
-            if (this.pages.length === 0 && !this.options.pagesTotal && retryCount < MAX_RETRIES) {
+            if (diskPages.length === 0 && !this.options.pagesTotal && retryCount < MAX_RETRIES) {
                 this.showEmptyState('Подготовка страниц...');
                 setTimeout(() => this.loadPages(dirPath, retryCount + 1), RETRY_DELAY_MS);
                 return;
@@ -149,31 +187,22 @@ class PngViewer {
             // Сбросить счётчики retry для всех контейнеров
             this.viewportInner.querySelectorAll('.page-container').forEach(c => { c._retryCount = 0; });
 
-            // Если нам известно общее число страниц (конвертация ещё идёт),
-            // добавляем записи-заглушки для страниц, которых ещё нет на диске.
-            // Вьюер сразу отрисует все контейнеры, а изображения подгрузятся по мере готовности.
-            const total = this.options.pagesTotal || this.pages.length;
-            if (total > this.pages.length) {
-                const dirName = dirPath.split('/').pop();
-                const stem = dirName.replace(/-png$/, '');
-                const baseUrl = this.pages.length > 0
-                    ? this.pages[0].url.substring(0, this.pages[0].url.lastIndexOf('/') + 1)
-                    : `/cache/${dirPath}/`;
-                for (let i = this.pages.length; i < total; i++) {
-                    const num = String(i + 1).padStart(4, '0');
-                    this.pages.push({ name: `${stem}_${num}.png`, url: `${baseUrl}${stem}_${num}.png`, size: 0 });
-                }
-            }
+            // Если известно общее число страниц (конвертация идёт или стоит на паузе),
+            // на месте недостающих страниц — заглушки. Вьюер сразу отрисует все контейнеры,
+            // а изображения подгрузятся по мере готовности.
+            const total = this.options.pagesTotal || diskPages.length;
+            this.pages = total > diskPages.length ? this._buildPageList(dirPath, diskPages, total) : diskPages;
+            this.diskPageNames = new Set(diskPages.map(p => p.name));
 
             if (this.pages.length > 0) {
                 this.renderAllPages();
                 this.updateUI();
-                // Если конвертация ещё идёт (известно total, но на диске меньше страниц),
-                // запускаем лёгкий polling для подтягивания новых PNG без перезагрузки вьюера.
+                // Пока на диске не все страницы — опрашиваем /pages: подтягиваем новые PNG
+                // без перезагрузки вьюера и держим heartbeat, без которого сервер ставит
+                // конвертацию на паузу.
                 const knownTotal = this.options.pagesTotal;
-                const diskPages = data.pages.length;
-                if (knownTotal && diskPages < knownTotal) {
-                    setTimeout(() => this._pollNewPages(dirPath, diskPages), RETRY_DELAY_MS);
+                if (knownTotal && diskPages.length < knownTotal) {
+                    setTimeout(() => this._pollNewPages(dirPath), RETRY_DELAY_MS);
                 }
             } else {
                 this.showEmptyState('Нет PNG файлов в директории');
@@ -186,59 +215,51 @@ class PngViewer {
     }
 
     /**
-     * Лёгкий polling новых страниц во время конвертации.
-     * Не сбрасывает zoom/rotations/scroll — только добавляет новые контейнеры.
+     * Лёгкий polling страниц, пока на диске не все PNG.
+     * Каждый запрос — heartbeat просмотра: без него сервер через 20 с ставит конвертацию
+     * на паузу, а want направляет её к странице, которую сейчас смотрят.
+     * Не сбрасывает zoom/rotations/scroll — только подтягивает появившиеся PNG.
+     * Страницы появляются не по порядку, поэтому новые определяются по имени файла.
      * @param {string} dirPath
-     * @param {number} knownDiskCount - количество страниц на диске при предыдущем опросе
      */
-    async _pollNewPages(dirPath, knownDiskCount) {
+    async _pollNewPages(dirPath) {
         const RETRY_DELAY_MS = 2000;
         const knownTotal = this.options.pagesTotal;
         if (!knownTotal) return;
+        const scheduleNext = () => setTimeout(() => this._pollNewPages(dirPath), RETRY_DELAY_MS);
 
         try {
-            const parts = dirPath.split('/');
-            const encodedPath = parts.map(p => encodeURIComponent(p)).join('/');
-            const response = await fetch(`${this.options.apiBase}/${encodedPath}/pages`);
+            const response = await fetch(this._pagesUrl(dirPath, this.currentPage + 1));
             if (!response.ok) {
-                if (knownDiskCount < knownTotal) {
-                    setTimeout(() => this._pollNewPages(dirPath, knownDiskCount), RETRY_DELAY_MS);
-                }
+                scheduleNext();
                 return;
             }
             const data = await response.json();
-            const newDiskCount = (data.pages || []).length;
+            const diskPages = data.pages || [];
+            const byName = new Map(diskPages.map(p => [p.name, p]));
 
-            if (newDiskCount > knownDiskCount) {
-                // Новые страницы появились — обновляем существующие контейнеры
-                // (img src для страниц, которые уже есть на диске, будут загружены IntersectionObserver'ом)
-                // Обновляем заглушки: страницы с index < newDiskCount теперь реальные
-                const containers = this.viewportInner.querySelectorAll('.page-container');
-                for (let i = knownDiskCount; i < newDiskCount && i < containers.length; i++) {
-                    const page = data.pages[i];
-                    if (!page) continue;
-                    const container = containers[i];
-                    if (!container) continue;
-                    // Обновляем запись в this.pages
-                    this.pages[i] = page;
-                    // Если изображение ещё не загружено — убираем флаг loaded чтобы observer подгрузил
-                    this.loadedPages.delete(i);
-                    // Сигнализируем observer'у перепроверить контейнер
-                    if (this.observer) {
-                        this.observer.unobserve(container);
-                        this.observer.observe(container);
-                    }
+            let changed = false;
+            const containers = this.viewportInner.querySelectorAll('.page-container');
+            this.pages.forEach((page, i) => {
+                const diskPage = byName.get(page.name);
+                if (!diskPage || this.diskPageNames.has(page.name)) return;
+                // Страница появилась на диске — заглушку заменяем реальной записью
+                this.diskPageNames.add(page.name);
+                this.pages[i] = diskPage;
+                changed = true;
+                // Грузится или уже показана — не трогаем (повторная загрузка дала бы второй img).
+                // Ждёт ретрая после 404 — перепроверяем observer'ом, чтобы показать без backoff.
+                const container = containers[i];
+                if (container && this.observer && !this.loadedPages.has(i)) {
+                    this.observer.unobserve(container);
+                    this.observer.observe(container);
                 }
-                this.updateUI();
-            }
+            });
+            if (changed) this.updateUI();
 
-            if (newDiskCount < knownTotal) {
-                setTimeout(() => this._pollNewPages(dirPath, newDiskCount), RETRY_DELAY_MS);
-            }
+            if (diskPages.length < knownTotal) scheduleNext();
         } catch {
-            if (knownDiskCount < knownTotal) {
-                setTimeout(() => this._pollNewPages(dirPath, knownDiskCount), RETRY_DELAY_MS);
-            }
+            scheduleNext();
         }
     }
 

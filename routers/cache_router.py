@@ -1,8 +1,11 @@
-# Version 2.5 - 25.09.2026 10:00:00 GMT
+# Version 2.6 - 25.09.2026 12:00:00 GMT
 # Cache Router для TlibWebApp
 # Описание: API endpoints для eager caching с per-file readiness.
 #           POST /prepare - fire-and-forget запуск подготовки кеша.
 #           POST /resolve - resolve для image, track, all_tracks (PDF-вьюер ходит в /api/png/.../pages).
+# 2.6: конвертация PDF, пока смотрят. _format_file_list не отдаёт pages для PDF на паузе
+#      (status=partial): без data-pages-total фронтенд держит гейт по жесту, а pages_total
+#      вьюер берёт из /pages. /prepare (не probe) при валидном кеше докручивает первый partial.
 # 2.5: kind=pdf убран из /resolve — путь без потребителя, запускал convert_standalone_pdf
 #      прямым запросом в обход фронтенда. Неизвестный kind -> 400 (CACHE_RESOLVE_KINDS).
 # 2.4: /prepare?probe=1 — проба без запуска подготовки (статус not_prepared + TOC).
@@ -33,6 +36,7 @@ from config import (
     CACHE_STATUS_READY, CACHE_STATUS_PREPARING, CACHE_STATUS_STARTED,
     CACHE_STATUS_ALREADY_PREPARING, CACHE_STATUS_NOT_FOUND, CACHE_STATUS_NOT_PREPARED,
     CACHE_STATUS_ERROR,
+    CACHE_FILE_STATUS_PARTIAL,
     CACHE_STAGE_STARTING,
     CACHE_RESOLVE_KINDS,
 )
@@ -41,6 +45,7 @@ from config import (
 from services.cache.cache_prepare_service import (
     prepare_archive_cache,
     convert_standalone_pdf,
+    resume_pdf_conversion,
     is_preparing,
     read_prepare_status,
     _cleanup_stale
@@ -51,7 +56,7 @@ from services.cache.cache_service import (
     is_cache_valid,
     is_cache_valid_from_meta
 )
-from services.cache.cache_pipeline import read_zip_toc
+from services.cache.cache_pipeline import read_zip_toc, first_partial_png_dir
 
 # Импорт логгеров
 from logging_config import app_logger
@@ -87,8 +92,9 @@ def _format_file_list(archive_name: str, items: list[dict]) -> list[dict]:
         kind = item.get("kind")
         if kind:
             entry["kind"] = kind
+        # PDF на паузе для фронтенда не «готов»: без pages вьюер ждёт жеста и берёт pages_total из /pages
         pages = item.get("pages")
-        if pages:
+        if pages and item.get("status") != CACHE_FILE_STATUS_PARTIAL:
             entry["pages"] = pages
         png_dir = item.get("png_dir")
         if png_dir:
@@ -193,6 +199,7 @@ async def prepare_cache(archive_name: str, request: Request, background_tasks: B
 
     probe=True — те же проверки, но подготовка не запускается: вместо "started"
     возвращается "not_prepared". Нужна для рендера карточки без запуска конвертации.
+    Без probe при валидном кеше возобновляется конвертация первого PDF на паузе (partial).
 
     Returns:
         {"status": "ready" | "already_preparing" | "started" | "not_prepared" | "not_found",
@@ -224,13 +231,17 @@ async def prepare_cache(archive_name: str, request: Request, background_tasks: B
                 return JSONResponse({"status": CACHE_STATUS_READY, "files": files})
             return JSONResponse({"status": CACHE_STATUS_NOT_FOUND})
 
+        collector = getattr(request.app.state, "stats_collector", None)
+
         # Проверяем актуальность кеша
         if is_cache_valid(archive_name, source_path):
             meta = read_meta(archive_name)
             files = _format_file_list(archive_name, meta.get("files", [])) if meta else []
+            # Прогрев по жесту и клик по вкладке возобновляют PDF на паузе, не дожидаясь /pages
+            partial_png_dir = first_partial_png_dir(meta) if meta and not probe else None
+            if partial_png_dir:
+                background_tasks.add_task(resume_pdf_conversion, archive_name, partial_png_dir, collector)
             return JSONResponse({"status": CACHE_STATUS_READY, "files": files})
-
-        collector = getattr(request.app.state, "stats_collector", None)
 
         if zip_path.exists():
             # Читаем TOC (центральный каталог ZIP) — доли миллисекунды, без extraction

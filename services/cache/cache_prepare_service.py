@@ -1,9 +1,15 @@
-# Version 2.0 - 06.02.2026 00:00:00 GMT
+# Version 2.2 - 25.09.2026 15:00:00 GMT
 # Cache Prepare Service для TlibWebApp
 # Описание: Централизованный сервис подготовки кеша архивов.
 #           Единственный владелец _prepare.json и lock-логики.
 #           Поддерживает eager caching с per-file readiness.
 #           Работает единообразно для ZIP архивов и standalone PDF.
+# 2.1: конвертация PDF, пока смотрят. PDF на паузе остаётся в meta со status=partial,
+#      resume_pdf_conversion докручивает его с недостающих страниц (без purge готовых PNG).
+#      record_cache_prepared — только когда в meta не осталось partial (без двойного счёта).
+# 2.2: сбой докрутки закрывает директорию на готовых страницах (_pages_total.txt и pages
+#      в meta = числу PNG): она перестаёт быть частичной, опрос вьюера не ставит холостую
+#      докрутку, вьюер не ждёт недостающих страниц. Поле partial в «Cache prepared successfully».
 
 import os
 import json
@@ -22,8 +28,10 @@ from config import (
     CACHE_LOCK_DIRNAME,
     CACHE_ZIP_SIZE_MULTIPLIER,
     CACHE_PDF_SIZE_MULTIPLIER,
-    CACHE_STATUS_PREPARING, CACHE_STATUS_NONE,
+    CACHE_STATUS_PREPARING, CACHE_STATUS_NONE, CACHE_STATUS_ERROR,
+    CACHE_FILE_STATUS_PARTIAL,
     CACHE_STAGE_STARTING, CACHE_STAGE_CONVERTING,
+    PNG_PAGES_TOTAL_FILENAME,
 )
 
 # Импорт логгеров
@@ -35,16 +43,22 @@ from .cache_service import (
     get_png_dir_path,
     ensure_cache_space,
     atomic_write_json,
-    is_cache_valid
+    read_meta,
+    is_cache_valid,
+    is_cache_valid_from_meta
 )
+from .cache_watch import count_pngs
 from .cache_pipeline import (
     extract_files,
+    extract_single_member,
     convert_gps_tracks,
     convert_pdfs,
     convert_images,
     write_meta,
     write_meta_standalone_pdf,
-    write_meta_with_error
+    write_meta_with_error,
+    find_pdf_entry,
+    update_meta_file_entry
 )
 
 
@@ -232,6 +246,20 @@ def _cleanup_stale(archive_name: str) -> None:
         app_logger.warning(f"Failed to cleanup stale prepare status for {archive_name}: {e}")
 
 
+def _has_partial(files: list[dict]) -> bool:
+    """True, если хотя бы один PDF стоит на паузе (status=partial)."""
+    return any(f.get("status") == CACHE_FILE_STATUS_PARTIAL for f in files)
+
+
+def _record_cache_prepared(stats_collector) -> None:
+    """Учитывает отчёт в «В кэш»; сбой счётчика не должен ронять подготовку."""
+    if stats_collector is not None:
+        try:
+            stats_collector.record_cache_prepared()
+        except Exception:
+            pass
+
+
 def _purge_old_content(cache_dir: Path) -> None:
     """
     Удаляет всё содержимое cache_dir кроме _prepare.lockdir и _prepare.json.
@@ -332,12 +360,12 @@ async def prepare_archive_cache(archive_name: str, zip_path: Path, stats_collect
         # Шаг 12: Записываем _meta.json атомарно с полной информацией
         await write_meta(archive_name, zip_path, cache_dir, files_info, geo_archive_info)
         
-        log_with_data(logging.INFO, "Cache prepared successfully", archive=archive_name)
-        if stats_collector is not None:
-            try:
-                stats_collector.record_cache_prepared()
-            except Exception:
-                pass
+        # partial — чтобы замер «конвертаций в час» по app.log не считал архивы на паузе завершёнными
+        log_with_data(logging.INFO, "Cache prepared successfully", archive=archive_name,
+                      partial=_has_partial(files_info))
+        # PDF на паузе учтёт resume_pdf_conversion, когда докрутится последний
+        if not _has_partial(files_info):
+            _record_cache_prepared(stats_collector)
 
     except Exception as e:
         app_logger.error(f"Error preparing cache for {archive_name}: {e}", exc_info=True)
@@ -405,7 +433,7 @@ async def convert_standalone_pdf(pdf_path: Path, archive_name: str, stats_collec
         # Pre-scan: считаем страницы и записываем pages_total до начала рендеринга
         pre_pages = count_pdf_pages(pdf_path)
         if pre_pages > 0:
-            (png_dir / "_pages_total.txt").write_text(str(pre_pages))
+            (png_dir / PNG_PAGES_TOTAL_FILENAME).write_text(str(pre_pages))
             write_prepare_status(archive_name, stage=CACHE_STAGE_CONVERTING, sub="pdf",
                                  pages_total=pre_pages, converting_path=pdf_path.name)
         
@@ -422,17 +450,15 @@ async def convert_standalone_pdf(pdf_path: Path, archive_name: str, stats_collec
             await write_meta_with_error(archive_name, pdf_path, str(result))
             return
         
-        page_count, total_size = result
-        
-        # Шаг 8: Записываем _meta.json
-        await write_meta_standalone_pdf(archive_name, pdf_path, png_dir, page_count)
-        
-        log_with_data(logging.INFO, "Standalone PDF converted", pdf=archive_name, pages=page_count)
-        if stats_collector is not None:
-            try:
-                stats_collector.record_cache_prepared()
-            except Exception:
-                pass
+        pages_done, page_count, _total_size, completed = result
+
+        # Шаг 8: Записываем _meta.json (на паузе — status=partial, докрутит resume_pdf_conversion)
+        await write_meta_standalone_pdf(archive_name, pdf_path, png_dir, page_count,
+                                        pages_done=None if completed else pages_done)
+
+        if completed:
+            log_with_data(logging.INFO, "Standalone PDF converted", pdf=archive_name, pages=page_count)
+            _record_cache_prepared(stats_collector)
 
     except Exception as e:
         app_logger.error(f"Error converting standalone PDF {archive_name}: {e}", exc_info=True)
@@ -444,4 +470,138 @@ async def convert_standalone_pdf(pdf_path: Path, archive_name: str, stats_collec
         except Exception:
             pass
         
+        _release_lock(archive_name)
+
+
+def _mark_resume_failed(archive_name: str, png_dir_rel: str, error: str) -> None:
+    """
+    Закрывает директорию на готовых страницах после сбоя докрутки: запись PDF — error,
+    маркер _pages_total.txt и pages в meta — число готовых PNG (без PNG маркер удаляется).
+    Директория перестаёт быть частичной: опрос вьюера (раз в 2 с) не ставит холостую
+    докрутку, а вьюер показывает готовые страницы, не ожидая недостающих. Без готовых
+    страниц у вьюера штатный путь «ретраи /pages → ошибка загрузки». Причина — в app.log.
+    """
+    try:
+        png_dir = get_cache_dir(archive_name) / png_dir_rel
+        ready = count_pngs(png_dir)
+        marker = png_dir / PNG_PAGES_TOTAL_FILENAME
+        if ready > 0:
+            marker.write_text(str(ready))
+        else:
+            marker.unlink(missing_ok=True)
+        update_meta_file_entry(archive_name, png_dir_rel, {
+            "status": CACHE_STATUS_ERROR, "error": error, "pages": ready, "pages_done": None,
+        })
+    except Exception as e:
+        app_logger.warning(f"Failed to mark PDF resume error for {archive_name}/{png_dir_rel}: {e}")
+
+
+async def resume_pdf_conversion(archive_name: str, png_dir_rel: str, stats_collector=None) -> None:
+    """
+    Докручивает PDF, поставленный на паузу (status=partial в _meta.json), с недостающих страниц.
+    Запускается из GET /api/png/.../pages (heartbeat просмотра) и из /prepare при валидном кеше.
+    Готовые PNG не трогаются (без purge); конвертер снова встанет на паузу, если смотреть перестанут.
+
+    Args:
+        archive_name: имя архива (директория кеша)
+        png_dir_rel: путь PNG-директории внутри кеша архива (posix)
+        stats_collector: опциональный StatsCollector для учёта кэшированных отчётов
+    """
+    # Шаг 1: есть что докручивать? (без побочных эффектов — lock создал бы директорию кеша)
+    meta = read_meta(archive_name)
+    if meta is None or not is_cache_valid_from_meta(meta):
+        return
+    entry = find_pdf_entry(meta, png_dir_rel)
+    if entry is None or entry.get("status") != CACHE_FILE_STATUS_PARTIAL:
+        return
+    source_path = Path(meta["source"]["path"])
+    if not source_path.exists():
+        # is_cache_valid_from_meta считает кеш удалённого источника валидным, но рендерить не из чего
+        return
+
+    # Шаг 2: не мешаем идущей подготовке; stale — очищаем, как prepare_archive_cache
+    if is_preparing(archive_name):
+        return
+    prepare = read_prepare_status(archive_name)
+    if prepare["status"] == CACHE_STATUS_PREPARING:
+        _cleanup_stale(archive_name)
+
+    # Шаг 3: захватываем lock
+    if not _acquire_lock(archive_name):
+        app_logger.debug(f"Lock busy for {archive_name}, skip PDF resume")
+        return
+
+    cache_dir = get_cache_dir(archive_name)
+    work_dir = cache_dir / CACHE_WORK_DIRNAME
+    zip_member = entry["zip_path"]
+
+    try:
+        # Шаг 4: пока брали lock, запись мог докрутить другой запуск
+        meta = read_meta(archive_name)
+        entry = find_pdf_entry(meta, png_dir_rel) if meta else None
+        if entry is None or entry.get("status") != CACHE_FILE_STATUS_PARTIAL:
+            return
+
+        write_prepare_status(archive_name, stage=CACHE_STAGE_CONVERTING, sub="pdf",
+                             pages_total=entry.get("pages", 0), converting_path=zip_member)
+
+        # Шаг 5: освобождаем место (оценка по полному PDF — с запасом)
+        ensure_cache_space(int(entry.get("size", 0) * CACHE_PDF_SIZE_MULTIPLIER))
+
+        # Шаг 6: источник — standalone PDF напрямую, из ZIP — перераспаковка одного файла
+        if source_path.suffix.lower() == ".pdf":
+            pdf_path = source_path
+        else:
+            pdf_path = await extract_single_member(source_path, zip_member, work_dir)
+
+        # Шаг 7: докручиваем недостающие страницы
+        from services.conversion.pdf_to_png_service import convert_pdf_to_directory
+
+        def _pdf_progress(done, total):
+            pct = int(done / total * 100) if total > 0 else 0
+            write_prepare_status(archive_name, stage=CACHE_STAGE_CONVERTING,
+                                 sub="pdf", detail=f"{done}/{total} ({pct}%)",
+                                 pages_total=total, converting_path=zip_member)
+
+        png_dir = get_png_dir_path(archive_name, zip_member)
+        success, result = await convert_pdf_to_directory(
+            pdf_path, png_dir, Path(zip_member).stem, on_progress=_pdf_progress
+        )
+
+        if not success:
+            app_logger.warning(f"PDF resume failed for {archive_name}/{png_dir_rel}: {result}")
+            _mark_resume_failed(archive_name, png_dir_rel, str(result))
+            return
+
+        pages_done, page_count, _total_size, completed = result
+
+        # Шаг 8: обновляем запись; завершённая выглядит как обычная (без status/pages_done)
+        if completed:
+            fields = {"status": None, "pages_done": None}
+        else:
+            fields = {"pages_done": pages_done}
+        meta = update_meta_file_entry(archive_name, png_dir_rel, fields)
+
+        log_with_data(logging.INFO, "PDF conversion resumed", archive=archive_name,
+                      png_dir=png_dir_rel, done=pages_done, total=page_count, completed=completed)
+        if completed and meta is not None and not _has_partial(meta.get("files", [])):
+            _record_cache_prepared(stats_collector)
+
+    except Exception as e:
+        app_logger.error(f"Error resuming PDF conversion {archive_name}/{png_dir_rel}: {e}", exc_info=True)
+        _mark_resume_failed(archive_name, png_dir_rel, str(e))
+    finally:
+        # Всегда удаляем _work/, _prepare.json и освобождаем lock
+        try:
+            if work_dir.exists():
+                shutil.rmtree(work_dir)
+        except Exception as e:
+            app_logger.warning(f"Failed to cleanup _work/ for {archive_name}: {e}")
+
+        prepare_path = cache_dir / CACHE_PREPARE_STATUS_FILENAME
+        try:
+            prepare_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
         _release_lock(archive_name)

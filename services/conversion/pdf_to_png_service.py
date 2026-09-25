@@ -1,14 +1,22 @@
-# Version 4.0 - 28.03.2026 00:00:00 GMT
+# Version 5.0 - 25.09.2026 12:00:00 GMT
 # PDF to PNG Conversion Service для TlibWebApp
 # Описание: Конвертация PDF файлов в PNG страницы.
 #           Использует PyMuPDF (fitz) для рендеринга PDF страниц.
-#           Открывает PDF один раз, рендерит и сохраняет страницы последовательно.
+#           Открывает PDF один раз, рендерит и сохраняет страницы по одной.
 #           Пиковое потребление RAM — одна страница, а не весь документ.
 #           Lock на уровне архива обеспечивается cache_prepare_service.
 #           Конфигурация через PDF_TO_PNG_* параметры в config.py.
+# 5.0: конвертация, пока смотрят. Готовые PNG пропускаются (докрутка частичной директории),
+#      первой рендерится страница, которую показывает вьюер (want из _watch.json), запуск
+#      встаёт на паузу через PDF_CONVERT_IDLE_TIMEOUT_SECONDS тишины heartbeat.
+#      PNG пишется атомарно (tmp + os.replace): готовая страница больше не перерисовывается,
+#      поэтому обрыв записи при рестарте не должен оставлять битый файл.
+#      Результат — (pages_done, page_count, total_size, completed).
 
+import os
 import time
 import asyncio
+import logging
 from pathlib import Path
 from typing import Tuple
 from dataclasses import dataclass
@@ -19,10 +27,14 @@ from config import (
     PDF_TO_PNG_DPI,
     PDF_TO_PNG_COLORSPACE,
     PDF_TO_PNG_ALPHA,
+    PDF_CONVERT_IDLE_TIMEOUT_SECONDS,
 )
 
 # Импорт логгеров
-from logging_config import app_logger
+from logging_config import app_logger, log_with_data
+
+# Heartbeat просмотра PNG-директории
+from services.cache.cache_watch import read_watch
 
 # Проверка наличия PyMuPDF
 try:
@@ -106,18 +118,32 @@ def count_pdf_pages(pdf_path: Path) -> int:
 # STREAMING: РЕНДЕРИНГ СТРАНИЦЫ ЗА СТРАНИЦЕЙ С НЕМЕДЛЕННОЙ ЗАПИСЬЮ НА ДИСК
 # ============================================================================
 
+def _next_page(done: set, cursor: int, page_count: int) -> int:
+    """Ближайшая недостающая страница (0-based) не раньше cursor, иначе минимальная недостающая."""
+    for i in range(cursor, page_count):
+        if i not in done:
+            return i
+    return next(i for i in range(page_count) if i not in done)
+
+
 def _convert_pdf_to_directory_sync(
     pdf_path: Path,
     output_dir: Path,
     pdf_stem: str,
     config: ConversionConfig,
     on_progress=None
-) -> Tuple[int, int]:
+) -> Tuple[int, int, int, bool]:
     """
-    Конвертирует все страницы PDF в PNG и сохраняет в директорию.
-    Открывает PDF один раз, рендерит и сохраняет страницы последовательно.
+    Рендерит недостающие страницы PDF в PNG, пока директорию смотрят.
+    Открывает PDF один раз, рендерит и сохраняет страницы по одной.
     Пиковое потребление RAM — одна страница, а не весь документ.
     Синхронная функция для thread pool.
+
+    Каждая страница рендерится один раз: готовые PNG (докрутка после паузы) пропускаются.
+    Между страницами читается heartbeat просмотра (_watch.json):
+    - запрошенная вьюером страница (want) рендерится первой, дальше — по порядку от неё;
+    - если heartbeat молчит дольше PDF_CONVERT_IDLE_TIMEOUT_SECONDS (отсчёт от старта запуска
+      или последнего heartbeat) — пауза. Первая страница запуска рендерится всегда.
 
     Args:
         pdf_path: Путь к PDF файлу
@@ -127,7 +153,7 @@ def _convert_pdf_to_directory_sync(
         on_progress: опциональный callback(done, total) после каждой страницы
 
     Returns:
-        (page_count, total_size_bytes)
+        (pages_done, page_count, total_size_bytes, completed) — total_size только за этот запуск
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -143,10 +169,25 @@ def _convert_pdf_to_directory_sync(
         page_count = len(doc)
         total_size = 0
 
-        if on_progress:
-            on_progress(0, page_count)
+        existing = {p.name for p in output_dir.glob("*.png")}
+        done = {i for i in range(page_count) if generate_png_filename(pdf_stem, i) in existing}
 
-        for i in range(page_count):
+        if on_progress:
+            on_progress(len(done), page_count)
+
+        last_seen = time.time()  # старт запуска: без зрителя рендерим не дольше окна тишины
+        cursor = 0
+        rendered = 0
+
+        while len(done) < page_count:
+            ts, want = read_watch(output_dir)
+            last_seen = max(last_seen, ts)
+            if rendered > 0 and time.time() - last_seen > PDF_CONVERT_IDLE_TIMEOUT_SECONDS:
+                break
+            if want is not None and want <= page_count and (want - 1) not in done:
+                cursor = want - 1
+            i = _next_page(done, cursor, page_count)
+
             start_time = time.perf_counter()
 
             page = doc[i]
@@ -154,22 +195,28 @@ def _convert_pdf_to_directory_sync(
             png_data = pixmap.tobytes(output="png")
             pixmap = None  # освобождаем память сразу
 
-            filename = generate_png_filename(pdf_stem, i)
-            file_path = output_dir / filename
-            file_path.write_bytes(png_data)
+            # tmp-имя не матчится glob("*.png") и исключается из cache_size_bytes ('.tmp-')
+            file_path = output_dir / generate_png_filename(pdf_stem, i)
+            tmp_path = file_path.with_name(f"{file_path.name}.tmp-{os.getpid()}")
+            tmp_path.write_bytes(png_data)
+            os.replace(tmp_path, file_path)
             total_size += len(png_data)
             png_data = None  # освобождаем память сразу
+
+            done.add(i)
+            rendered += 1
+            cursor = i + 1
 
             render_time = time.perf_counter() - start_time
             app_logger.debug(f"Page {i + 1}/{page_count} rendered in {render_time:.2f}s")
 
             if on_progress:
-                on_progress(i + 1, page_count)
+                on_progress(len(done), page_count)
 
     finally:
         doc.close()
 
-    return page_count, total_size
+    return len(done), page_count, total_size, len(done) == page_count
 
 
 async def convert_pdf_to_directory(
@@ -179,10 +226,11 @@ async def convert_pdf_to_directory(
     on_progress=None
 ) -> Tuple[bool, object]:
     """
-    Конвертирует PDF в PNG директорию (streaming: одна страница за раз).
+    Конвертирует PDF в PNG директорию (streaming: одна страница за раз), пока её смотрят.
 
-    Открывает PDF один раз, рендерит и сохраняет страницы последовательно.
-    Не держит все PNG в памяти одновременно.
+    Открывает PDF один раз, рендерит и сохраняет страницы по одной.
+    Не держит все PNG в памяти одновременно. Готовые PNG пропускаются,
+    без heartbeat просмотра запуск встаёт на паузу (см. _convert_pdf_to_directory_sync).
 
     Args:
         pdf_path: Путь к PDF файлу
@@ -191,7 +239,8 @@ async def convert_pdf_to_directory(
         on_progress: опциональный callback(done, total) после каждой страницы
 
     Returns:
-        (True, (page_count, total_size_bytes)) - при успехе
+        (True, (pages_done, page_count, total_size_bytes, completed)) - при успехе
+            (пауза — тоже успех, completed=False)
         (False, error_message: str) - при ошибке
     """
     if not HAS_PYMUPDF:
@@ -204,7 +253,7 @@ async def convert_pdf_to_directory(
         config = get_default_config()
 
         loop = asyncio.get_event_loop()
-        page_count, total_size = await loop.run_in_executor(
+        pages_done, page_count, total_size, completed = await loop.run_in_executor(
             None,
             _convert_pdf_to_directory_sync,
             pdf_path, output_dir, pdf_stem, config, on_progress
@@ -213,9 +262,14 @@ async def convert_pdf_to_directory(
         if page_count == 0:
             return False, "No pages in PDF"
 
-        app_logger.debug(f"PDF rendered: {pdf_path.name}, {page_count} pages, {total_size} bytes")
+        if completed:
+            app_logger.debug(f"PDF rendered: {pdf_path.name}, {page_count} pages, {total_size} bytes")
+        else:
+            # Наблюдаемость: доля пауз среди конвертаций видна по app.log
+            log_with_data(logging.INFO, "PDF conversion paused",
+                          png_dir=output_dir.as_posix(), done=pages_done, total=page_count)
 
-        return True, (page_count, total_size)
+        return True, (pages_done, page_count, total_size, completed)
 
     except Exception as e:
         app_logger.error(f"Error converting PDF to directory: {e}", exc_info=True)

@@ -8,6 +8,8 @@
 
 Конвертация выполняется **последовательно**: PDF открывается один раз, страницы рендерятся одна за другой и немедленно сохраняются на диск. Пиковое потребление RAM — одна страница, а не весь документ.
 
+Конвертация идёт, **только пока документ смотрят** (см. [«Конвертация, пока смотрят»](#2-конвертация-пока-смотрят)): без heartbeat от png-viewer она встаёт на паузу через 20 с и докручивается при следующем просмотре. Каждая страница рендерится один раз — работа на документ ограничена его размером, сколько бы раз его ни открывали.
+
 Вьюер открывается **мгновенно** без промежуточных спиннеров: `png_dir` вычисляется детерминированно на стороне фронтенда, `pages_total` берётся из `/prepare` ответа (поле `pages` в списке файлов). Resolve round-trip исключён полностью. Если конвертация ещё идёт, `png-viewer.js` сам ретраит `/pages` каждые 2 сек до появления первых PNG. По мере сохранения PNG файлов на диск страницы автоматически подгружаются через `IntersectionObserver`. Если страница ещё не готова — показывается «Страница N подготавливается...» и выполняются повторные попытки с экспоненциальным backoff (3 сек → 4.5 сек → ... до 15 сек).
 
 ## Установка зависимостей
@@ -59,14 +61,42 @@ convert_pdf_to_directory() → data.cache/{name}/{name}-png/
 
 #### PDF из архива (ZIP)
 ```
-GET /api/cache/{name}/prepare
+POST /api/cache/{name}/prepare
   ↓
 prepare_archive_cache() → extract_files() → convert_pdfs()
   ↓
 convert_pdf_to_directory() → data.cache/{name}/{pdf_stem}-png/
 ```
 
-### 2. Прогрессивный показ страниц (Variant 2: без resolve round-trip)
+#### Докрутка PDF на паузе
+```
+GET /api/png/{name}/{pdf_stem}-png/pages   (директория частичная, подготовка не идёт)
+POST /api/cache/{name}/prepare             (без probe, кеш валиден, есть PDF на паузе)
+  ↓
+resume_pdf_conversion() → convert_pdf_to_directory() (только недостающие страницы)
+```
+
+### 2. Конвертация, пока смотрят
+
+Конвертер работает, только пока кто-то смотрит документ. Число визитов (в том числе ботов, прошедших гейт по жесту) работу не умножает: каждая страница рендерится один раз.
+
+- **Heartbeat.** Пока на диске не все страницы, png-viewer раз в 2 с опрашивает `GET /api/png/{dir}/pages?want=N`. Роутер пишет в PNG-директорию `_watch.json` — `{"ts": unix-время, "want": N}`, где `want` — страница (1-based), которую сейчас показывает вьюер (`services/cache/cache_watch.py`).
+- **Пауза.** Между страницами конвертер читает `_watch.json`. Если heartbeat молчит дольше `PDF_CONVERT_IDLE_TIMEOUT_SECONDS` (20 с, `config/cache.py`), запуск останавливается. Отсчёт — от `max(старт запуска, последний heartbeat)`: запуск без зрителя (прогрев по жесту до открытия вкладки) рендерит не дольше 20 с, первая страница рендерится всегда. В `app.log` — строка `PDF conversion paused` (`done`/`total`).
+- **Порядок.** Если страница `want` ещё не готова, она рендерится следующей, дальше — по порядку от неё; дойдя до конца, конвертер возвращается к пропущенным страницам в начале. Deep-link `page=40` показывает 40-ю страницу раньше 10-й.
+- **Частичное состояние.** Пауза — не ошибка: `_meta.json` пишется как обычно, кеш валиден, LRU видит обычную папку. Запись PDF получает `"status": "partial"` и `pages_done` (`pages` — полное число страниц). Частичная директория не удаляется.
+- **Докрутка** — `resume_pdf_conversion()` (`cache_prepare_service.py`): готовые PNG пропускаются (без purge), страница пишется атомарно (tmp + `os.replace`), поэтому обрыв при рестарте не оставляет битый файл. Запускается:
+  - из `/pages`, если директория частичная (PNG меньше, чем в `_pages_total.txt`) и подготовка архива не идёт;
+  - из `/prepare` без `probe` при валидном кеше — для первого PDF на паузе: прогрев по жесту и клик по вкладке возобновляют конвертацию, не дожидаясь `/pages`.
+
+  PDF из ZIP перераспаковывается в `_work/` одним файлом (`extract_single_member`). По завершении `status` и `pages_done` снимаются, в `app.log` — `PDF conversion resumed` (`done`/`total`/`completed`). При сбое докрутки директория закрывается на готовых страницах: запись получает `"status": "error"`, а `_pages_total.txt` и `pages` в meta — число готовых PNG (без PNG маркер удаляется). Директория перестаёт быть частичной: опрос вьюера не ставит холостую докрутку каждые 2 с, вьюер показывает готовые страницы и не ждёт недостающих; причина — в `app.log`.
+- **Фронтенд.** Для PDF на паузе `/prepare` не отдаёт `pages`: без `data-pages-total` гейт по жесту продолжает работать, а `pages_total` вьюер берёт из `/pages`. PNG на диске появляются не по порядку, поэтому png-viewer строит список `0..total-1` по имени файла (заглушки на месте недостающих) и при опросе сопоставляет страницы по имени.
+- **«В кэш»** в админке учитывает отчёт, когда в `_meta.json` не осталось PDF на паузе.
+
+Фоновая вкладка: браузер троттлит таймеры до раза в секунду (сильнее — после 5 минут скрытия), так что двухсекундный опрос переживает переключение вкладки на минуту-другую. Если опрос всё же замер и конвертация встала, следующий `/pages` её возобновит.
+
+Не входит: приоритет между несколькими PDF одного ZIP (смотрят второй, конвертируется первый) — heartbeat у каждой директории свой, порядок файлов прежний. Откат на версию без этой логики требует удалить partial-папки из `data.cache/`: старый код считал бы их готовыми и не докручивал.
+
+### 3. Прогрессивный показ страниц (Variant 2: без resolve round-trip)
 
 `pdfViewer.js` вычисляет `png_dir` **детерминированно** на клиенте (`computePngDir`) и берёт `pages_total` из `data-pages-total` атрибута контейнера (заполняется при рендере из `/prepare` ответа). Вьюер открывается немедленно без сетевого запроса.
 
@@ -84,36 +114,49 @@ png-viewer.js → GET /api/png/09582/09582-png/pages → [251 файл]
 
 /prepare (cold path — конвертация ещё идёт):
   → {files: [{kind:"pdf", ...}]}  (без pages/png_dir — TOC не содержит этих данных)
-  
+
 buildViewersHtml → computePngDir() → data-png-dir="09582/09582-png" (без data-pages-total)
   ↓
 resolvePdfViewer() — activateViewerIframe после первого жеста пользователя (whenUserGesture)
   ↓
-png-viewer.js → GET /api/png/09582/09582-png/pages → 404 (директория ещё создаётся)
+png-viewer.js → GET /api/png/09582/09582-png/pages?want=1 → 404 (директория ещё создаётся)
   ↓
 retry каждые 2 сек (до 15 попыток) → "Подготовка страниц..."
   ↓ (pre-scan создал директорию)
-GET /pages → [] (пусто, pagesTotal=0)
+GET /pages?want=1 → [] (пусто) + pages_total
   ↓
-retry → ... → первые PNG появляются на диске
+заглушки 0..pages_total-1, опрос /pages?want=<текущая> каждые 2 сек (heartbeat)
   ↓
-GET /pages → [N файлов] → страницы отображаются прогрессивно
+новые PNG подставляются по имени файла → страницы отображаются прогрессивно
+
+/prepare (partial path — конвертация на паузе):
+  → {files: [{kind:"pdf", png_dir:"09582/09582-png", ...}]}  (без pages: status=partial в _meta.json)
+
+buildViewersHtml → data-png-dir="09582/09582-png" (без data-pages-total)
+  ↓
+resolvePdfViewer() — activateViewerIframe после жеста
+  ↓
+GET /pages?want=1 → [готовые PNG] + pages_total → heartbeat + resume_pdf_conversion
+  ↓
+опрос /pages?want=<текущая> каждые 2 сек, пока на диске не все страницы
 ```
 
 Для standalone PDF: `checkFileAvailable` вызывается так же, как для ZIP — `/prepare?probe=1` возвращает `pages`/`png_dir`, когда кеш готов, а конвертацию запускает `prepareCache` после жеста.
 
-**Pre-scan** (`convert_pdfs`) создаёт пустые PNG-директории (`mkdir`) до начала рендеринга — это гарантирует, что `/pages` вернёт `[]` (а не 404) как только pre-scan завершится.
+**Pre-scan** (`convert_pdfs`) создаёт пустые PNG-директории (`mkdir`) и маркеры `_pages_total.txt` до начала рендеринга — это гарантирует, что `/pages` вернёт `[]` (а не 404) как только pre-scan завершится.
 
-### 3. Структура PNG директории
+### 4. Структура PNG директории
 
 ```
 data.cache/09582/
 ├── 09582-png/
-│   ├── 09582_0001.png  (страница 1)
-│   ├── 09582_0002.png  (страница 2)
-│   └── ...
-├── _prepare.json       (временный, удаляется после завершения)
-└── _meta.json
+│   ├── 09582_0001.png    (страница 1)
+│   ├── 09582_0002.png    (страница 2)
+│   ├── ...
+│   ├── _pages_total.txt  (число страниц PDF, пишет pre-scan)
+│   └── _watch.json       (heartbeat просмотра: {"ts", "want"}, пишет /pages)
+├── _prepare.json         (временный, удаляется после завершения)
+└── _meta.json            (PDF на паузе: "status": "partial", "pages_done")
 ```
 
 `_prepare.json` во время конвертации содержит дополнительные поля:
@@ -176,6 +219,9 @@ PDF rendered: 09582.pdf, 150 pages, 52428800 bytes
 ### INFO уровень
 ```
 Standalone PDF converted — pdf=09582, pages=150
+Cache prepared successfully — archive=12345-TST, partial=True   (partial: в архиве есть PDF на паузе)
+PDF conversion paused — png_dir=.../data.cache/09582/09582-png, done=12, total=150
+PDF conversion resumed — archive=09582, png_dir=09582-png, done=150, total=150, completed=True
 ```
 
 ### WARNING уровень
@@ -249,10 +295,12 @@ services/
 ├── conversion/
 │   └── pdf_to_png_service.py       # Сервис конвертации
 │       ├── count_pdf_pages()           - быстрый подсчёт страниц (< 100 мс, без рендеринга)
-│       │     используется только в convert_standalone_pdf (мониторинг прогресса)
-│       ├── convert_pdf_to_directory()  - главная async функция
+│       │     pre-scan в convert_standalone_pdf и convert_pdfs (_pages_total.txt)
+│       ├── convert_pdf_to_directory()  - главная async функция → (pages_done, pages, size, completed)
 │       ├── _convert_pdf_to_directory_sync() - sync реализация (thread pool)
-│       │     on_progress(0, page_count) сразу после fitz.open() — сообщает pages_total
+│       │     пропускает готовые PNG, между страницами читает _watch.json:
+│       │     want — следующей, тишина > PDF_CONVERT_IDLE_TIMEOUT_SECONDS — пауза
+│       │     on_progress(done, page_count) сразу после fitz.open() — сообщает pages_total
 │       └── generate_png_filename()  - генерация имён файлов
 │
 ├── cache/
@@ -260,19 +308,28 @@ services/
 │   │   ├── convert_standalone_pdf()    - standalone PDF
 │   │   │     count_pdf_pages() + png_dir.mkdir() → pre-scan до рендеринга
 │   │   │     write_prepare_status(..., pages_total, converting_path)
-│   │   └── prepare_archive_cache()     - PDF из ZIP → convert_pdfs()
+│   │   ├── prepare_archive_cache()     - PDF из ZIP → convert_pdfs()
+│   │   └── resume_pdf_conversion()     - докрутка PDF на паузе (status=partial), без purge
+│   ├── cache_watch.py              # Heartbeat просмотра и частичное состояние
+│   │   ├── touch_watch() / read_watch() - _watch.json {ts, want}
+│   │   └── read_pages_total() / is_partial() - _pages_total.txt против числа PNG
 │   └── cache_service.py            # Управление кешем
 │       └── ensure_cache_space()        - LRU очистка
 │
 │   cache_pipeline.py               # convert_pdfs():
 │     Pre-scan: png_dir.mkdir() для всех PDF (директории создаются до начала рендеринга)
-│     _format_file_list(): pages + png_dir из _meta.json попадают в /prepare ответ
-│     Затем цикл конвертации
+│     Затем цикл конвертации; PDF на паузе → status=partial, pages_done
+│     extract_single_member(), update_meta_file_entry() — для докрутки
 │
 routers/cache_router.py             # /prepare и /resolve endpoints
 │   _format_file_list(): передаёт kind/pages/png_dir из _meta.json фронтенду
+│     (pages — только для завершённых PDF, не для partial)
+│   prepare_cache(): без probe и при валидном кеше → resume_pdf_conversion первого partial
 │   resolve_cache_item(): только image/track/all_tracks; kind="pdf" → 400
 │     (PDF-вьюер ходит в /api/png/.../pages напрямую)
+│
+routers/png_viewer_router.py        # GET /api/png/{dir}/pages?want=N
+│   touch_watch() — heartbeat; partial и подготовка не идёт → resume_pdf_conversion
 │
 js/modules/ui/results/single.js     # handleSingleResult:
 │   checkFileAvailable() вызывается для всех типов (ZIP и standalone PDF)
@@ -292,7 +349,10 @@ js/modules/ui/results/viewers/
 │
 js/png-viewer.js                    # Прогрессивный показ
     initFromHash(): парсит total= из хеша → this.options.pagesTotal
-    loadPages(dirPath, retryCount): retry на 404 и пустой список (до 15 попыток, 2 сек)
+    loadPages(dirPath, retryCount): retry на 404 и пустой список (до 15 попыток, 2 сек);
+      /pages?want=<initialPage+1>, список 0..total-1 по имени файла (_buildPageList)
+    _pollNewPages(): /pages?want=<currentPage+1> каждые 2 сек, пока на диске не все страницы —
+      heartbeat для конвертера; новые PNG сопоставляются по имени
     loadPageImage(): 404 → "Подготавливается..." + retry с backoff
 │
 config/media.py                     # Параметры

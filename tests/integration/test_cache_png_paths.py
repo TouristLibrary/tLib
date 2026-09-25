@@ -1,4 +1,4 @@
-# Version 1.4 - 25.09.2026 10:00:00 GMT
+# Version 1.6 - 25.09.2026 15:00:00 GMT
 # Тесты безопасности путей cache_router и png_viewer_router (этап 4)
 # Описание: Проверяет, что traverse-векторы в archive_name, body.path и dir_path
 #           корректно отклоняются (400), а легитимные пути работают (не 400/500).
@@ -10,9 +10,15 @@
 # 1.3: /prepare?probe=1 — проба не запускает подготовку кеша (TestCachePrepareProbe).
 # 1.4: kind=pdf убран из /resolve — traversal-проверки переведены на kind=image,
 #      добавлен TestCacheResolveKind (pdf и неизвестный kind -> 400 без запуска подготовки).
+# 1.5: TestConvertWhileWatching — /pages?want= пишет _watch.json, partial-директория
+#      запускает resume_pdf_conversion, /prepare?probe=1 не отдаёт pages для partial.
+# 1.6: /pages обновляет mtime папки архива (LRU-метка просмотра PDF).
 
 from __future__ import annotations
 
+import json
+import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -306,6 +312,126 @@ class TestPngViewerPagesPath:
         assert resp.status_code == 200, f"ожидался 200, получен {resp.status_code}: {resp.text}"
         data = resp.json()
         assert data["total"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Конвертация PDF, пока смотрят: heartbeat, partial, докрутка
+# ---------------------------------------------------------------------------
+
+
+def _make_partial_cache(data_dir: Path, cache_dir: Path, archive_name: str) -> Path:
+    """Stub-кеш ZIP с PDF на паузе: meta (status=partial), _pages_total.txt=3 и одна PNG.
+
+    source в meta совпадает со stub-zip по mtime/size — кеш валиден.
+    """
+    _make_archive(data_dir, archive_name)
+    zip_path = data_dir / f"{archive_name}.zip"
+    stat = zip_path.stat()
+    png_dir = cache_dir / archive_name / "dir1" / "report-png"
+    png_dir.mkdir(parents=True)
+    (png_dir / "_pages_total.txt").write_text("3")
+    (png_dir / "report_0001.png").write_bytes(b"\x89PNG")
+    meta = {
+        "version": 1,
+        "source": {"path": str(zip_path), "mtime": stat.st_mtime, "size": stat.st_size},
+        "cache_size_bytes": 4,
+        "files": [{
+            "zip_path": "dir1/report.pdf", "kind": "pdf", "size": 1000,
+            "png_dir": "dir1/report-png", "pages": 3,
+            "status": "partial", "pages_done": 1,
+        }],
+    }
+    (cache_dir / archive_name / "_meta.json").write_text(json.dumps(meta), encoding="utf-8")
+    return png_dir
+
+
+@pytest.fixture()
+def resume_calls(monkeypatch) -> list[tuple]:
+    """Spy на resume_pdf_conversion в обоих роутерах.
+
+    TestClient выполняет BackgroundTasks синхронно после ответа — вызов виден сразу.
+    """
+    calls: list[tuple] = []
+
+    async def spy(archive_name, png_dir_rel, stats_collector=None):
+        calls.append((archive_name, png_dir_rel))
+
+    monkeypatch.setattr(png_viewer_router_module, "resume_pdf_conversion", spy)
+    monkeypatch.setattr(cache_router_module, "resume_pdf_conversion", spy)
+    return calls
+
+
+class TestConvertWhileWatching:
+    """png-viewer опрашивает /pages — это heartbeat; конвертация идёт, только пока смотрят."""
+
+    def test_pages_want_writes_watch_heartbeat(self, app_client, tmp_dirs):
+        png_dir = _make_png_dir(tmp_dirs["cache"], "00001-TST", "report-png")
+        resp = app_client.get("/api/png/00001-TST/report-png/pages?want=3")
+        assert resp.status_code == 200, resp.text
+        watch = json.loads((png_dir / "_watch.json").read_text(encoding="utf-8"))
+        assert watch["want"] == 3
+        assert watch["ts"] > 0
+
+    def test_pages_touches_archive_dir_for_lru(self, app_client, tmp_dirs):
+        """LRU вытесняет папки архивов по mtime; PDF-вьюер в /resolve не ходит — метку обновляет /pages."""
+        _make_png_dir(tmp_dirs["cache"], "00001-TST", "report-png")
+        archive_dir = tmp_dirs["cache"] / "00001-TST"
+        old_mtime = 1_000_000_000
+        os.utime(archive_dir, (old_mtime, old_mtime))
+        resp = app_client.get("/api/png/00001-TST/report-png/pages")
+        assert resp.status_code == 200, resp.text
+        assert archive_dir.stat().st_mtime > old_mtime + 1
+
+    def test_pages_without_want_writes_null_want(self, app_client, tmp_dirs):
+        png_dir = _make_png_dir(tmp_dirs["cache"], "00001-TST", "report-png")
+        resp = app_client.get("/api/png/00001-TST/report-png/pages")
+        assert resp.status_code == 200, resp.text
+        assert json.loads((png_dir / "_watch.json").read_text(encoding="utf-8"))["want"] is None
+
+    def test_pages_on_partial_dir_resumes_conversion(self, app_client, tmp_dirs, resume_calls):
+        _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
+        resp = app_client.get("/api/png/00001-TST/dir1/report-png/pages?want=2")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert (data["total"], data["pages_total"]) == (1, 3)
+        assert resume_calls == [("00001-TST", "dir1/report-png")]
+
+    def test_pages_on_complete_dir_does_not_resume(self, app_client, tmp_dirs, resume_calls):
+        png_dir = _make_png_dir(tmp_dirs["cache"], "00001-TST", "report-png")
+        (png_dir / "_pages_total.txt").write_text("2")
+        resp = app_client.get("/api/png/00001-TST/report-png/pages")
+        assert resp.status_code == 200, resp.text
+        assert resume_calls == []
+
+    def test_pages_while_preparing_does_not_resume(self, app_client, tmp_dirs, resume_calls):
+        """Идёт подготовка архива — она сама конвертирует PDF, докрутка не запускается."""
+        _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
+        prepare = {"status": "preparing", "stage": "converting",
+                   "updated_at": datetime.now(timezone.utc).isoformat()}
+        (tmp_dirs["cache"] / "00001-TST" / "_prepare.json").write_text(json.dumps(prepare), encoding="utf-8")
+        resp = app_client.get("/api/png/00001-TST/dir1/report-png/pages")
+        assert resp.status_code == 200, resp.text
+        assert resume_calls == []
+
+    def test_probe_hides_pages_of_partial_pdf(self, app_client, tmp_dirs, resume_calls):
+        """Частичный кеш для фронтенда не «готов»: без pages гейт по жесту продолжает работать."""
+        _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
+        resp = app_client.post("/api/cache/00001-TST/prepare?probe=1")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "ready"
+        pdf = data["files"][0]
+        assert "pages" not in pdf
+        assert pdf["png_dir"] == "00001-TST/dir1/report-png"
+        assert resume_calls == [], "проба не должна запускать докрутку"
+
+    def test_prepare_resumes_partial_pdf(self, app_client, tmp_dirs, resume_calls):
+        """Прогрев по жесту возобновляет конвертацию, не дожидаясь первого /pages."""
+        _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
+        resp = app_client.post("/api/cache/00001-TST/prepare")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["status"] == "ready"
+        assert resume_calls == [("00001-TST", "dir1/report-png")]
 
 
 # ---------------------------------------------------------------------------

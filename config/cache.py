@@ -1,8 +1,10 @@
-# Version 1.1 - 25.09.2026 10:00:00 GMT
+# Version 1.2 - 25.09.2026 12:00:00 GMT
 # Конфигурация кеша TlibWebApp
 # Описание: Имена файлов и директорий кеша, статусы, стадии подготовки,
 #           таймауты и параметры LRU-очистки.
 # 1.1: CACHE_RESOLVE_KINDS — допустимые kind у /api/cache/{name}/resolve (pdf убран).
+# 1.2: конвертация PDF, пока смотрят — PNG_WATCH_FILENAME, PNG_PAGES_TOTAL_FILENAME,
+#      PDF_CONVERT_IDLE_TIMEOUT_SECONDS, CACHE_FILE_STATUS_PARTIAL.
 
 # ==================== ФАЙЛЫ И ДИРЕКТОРИИ КЕША ====================
 
@@ -21,6 +23,15 @@ CACHE_PREPARE_STATUS_FILENAME: str = "_prepare.json"
 # Имя директории блокировки для подготовки кеша
 # Используется для атомарной блокировки через mkdir
 CACHE_LOCK_DIRNAME: str = "_prepare.lockdir"
+
+# Heartbeat просмотра в PNG-директории: {"ts": unix-время, "want": страница 1-based | null}.
+# Пишет GET /api/png/.../pages (png-viewer опрашивает его раз в 2 с),
+# читает конвертер PDF→PNG между страницами (services/cache/cache_watch.py)
+PNG_WATCH_FILENAME: str = "_watch.json"
+
+# Маркер общего числа страниц PDF в PNG-директории.
+# Пишется pre-scan'ом до рендеринга: вьюер рисует заглушки, а /pages отличает частичную директорию
+PNG_PAGES_TOTAL_FILENAME: str = "_pages_total.txt"
 
 # Суффикс имени файла GPS-архива (добавляется к имени архива)
 # Результат: {archive_name}-geo.zip
@@ -48,6 +59,11 @@ CACHE_ZIP_SIZE_MULTIPLIER: float = 1.5
 # Множитель для оценки размера кеша standalone PDF (размер PDF * множитель)
 CACHE_PDF_SIZE_MULTIPLIER: float = 3.0
 
+# Конвертер PDF→PNG встаёт на паузу, если heartbeat просмотра не обновлялся дольше этого (секунды).
+# Отсчёт — от max(старт запуска, последний heartbeat): запуск без зрителя рендерит не дольше этого окна.
+# Окно с запасом перекрывает период опроса png-viewer (2 с) и троттлинг таймеров фоновой вкладки (1 с)
+PDF_CONVERT_IDLE_TIMEOUT_SECONDS: int = 20
+
 
 # ==================== СТАТУСЫ КЕША ====================
 
@@ -60,6 +76,10 @@ CACHE_STATUS_NOT_FOUND: str = "not_found"
 CACHE_STATUS_NOT_PREPARED: str = "not_prepared"
 CACHE_STATUS_ERROR: str = "error"
 CACHE_STATUS_NONE: str = "none"
+
+# Статус записи PDF в _meta.json: конвертация на паузе, готовы не все страницы (pages_done < pages).
+# Кеш при этом валиден: докрутка — resume_pdf_conversion при следующем просмотре
+CACHE_FILE_STATUS_PARTIAL: str = "partial"
 
 # Стадии подготовки кеша
 CACHE_STAGE_STARTING: str = "starting"

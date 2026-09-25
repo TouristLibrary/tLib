@@ -1,19 +1,29 @@
-# Version 2.1 - 21.06.2026 19:00:00 GMT
+# Version 2.4 - 25.09.2026 12:40:00 GMT
 # PNG Viewer Router для TlibWebApp
 # Описание: API endpoints для PNG viewer. Предоставляет листинг PNG директорий в data.cache
 #           и списки PNG файлов для просмотра. Используется embedded-вьюером /png-viewer.
 #           Логика resolve переехала в единый cache_router POST /resolve.
+# 2.2: /pages — heartbeat просмотра для конвертации PDF, пока смотрят: пишет _watch.json
+#      (параметр want — страница, которую показывает вьюер) и возобновляет частичную
+#      конвертацию (resume_pdf_conversion), если она на паузе.
+# 2.4: имя архива и путь директории для heartbeat/докрутки берутся из проверенного full_path.
+# 2.3: /pages обновляет mtime папки архива (touch_watch) — LRU не вытесняет читаемый PDF.
 # 2.1: /pages переведён на канонический validate_and_resolve_under_base() (§3);
 #      _is_safe_dirname и ручная startswith-проверка удалены;
 #      _list_png_files использует .resolve() базы для корректного relative_to.
 
 import json
 from pathlib import Path
-from fastapi import APIRouter, Request
+from typing import Optional
+from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 
 # Импорт конфигурации
 from config import CACHE_DIRECTORY, CACHE_URL_PATH, CACHE_META_FILENAME
+
+# Импорт сервисов кеша: heartbeat просмотра и докрутка частичной конвертации
+from services.cache.cache_watch import touch_watch, read_pages_total, is_partial
+from services.cache.cache_prepare_service import is_preparing, resume_pdf_conversion
 
 # Импорт канонического валидатора путей
 from services.security.path_validation import (
@@ -159,7 +169,12 @@ async def get_directories(request: Request):
 
 
 @router.get("/{dir_path:path}/pages")
-async def get_pages(dir_path: str, request: Request):
+async def get_pages(
+    dir_path: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    want: Optional[int] = None,
+):
     """
     API: получить список PNG страниц в директории.
 
@@ -167,11 +182,17 @@ async def get_pages(dir_path: str, request: Request):
     Последний сегмент должен быть PNG-директорией (заканчивается на -png).
     Boundary проверка — через канонический validate_and_resolve_under_base() (§3).
 
+    Запрос — heartbeat просмотра: png-viewer опрашивает /pages раз в 2 с, пока страниц
+    на диске меньше pages_total. Конвертер работает, только пока heartbeat свежий,
+    и первой рендерит страницу want; частичная конвертация на паузе возобновляется.
+
     Args:
         dir_path: путь к директории (например: "12345-ABC/dir1/report-png")
+        want: страница (1-based), которую показывает вьюер
 
     Returns:
-        {"pages": [{"name": "...", "url": "...", "size": N}, ...], "total": N}
+        {"pages": [{"name": "...", "url": "...", "size": N}, ...], "total": N,
+         "directory": "...", "pages_total": N}   # pages_total — если известен из pre-scan
     """
     try:
         client_ip = request.client.host if request.client else "unknown"
@@ -212,17 +233,23 @@ async def get_pages(dir_path: str, request: Request):
         if not full_path.is_dir():
             return JSONResponse({'error': 'Not a directory'}, status_code=400)
 
+        # Имя архива и путь PNG-директории — из проверенного full_path, а не из сырых сегментов URL
+        cache_root = Path(CACHE_DIRECTORY).resolve()
+        rel_parts = full_path.relative_to(cache_root).parts
+        archive_name = rel_parts[0]
+        png_dir_rel = "/".join(rel_parts[1:])
+
+        # Heartbeat просмотра: конвертер PDF работает, пока директорию смотрят; заодно LRU-метка архива
+        touch_watch(full_path, want if want is not None and want >= 1 else None, cache_root / archive_name)
+        if is_partial(full_path) and not is_preparing(archive_name):
+            collector = getattr(request.app.state, "stats_collector", None)
+            background_tasks.add_task(resume_pdf_conversion, archive_name, png_dir_rel, collector)
+
         # Получаем список файлов (full_path resolved → _list_png_files использует resolved базу)
         pages = _list_png_files(full_path)
 
-        # Читаем маркер общего числа страниц (записывается pre-scan'ом)
-        pages_total = None
-        pages_total_file = full_path / "_pages_total.txt"
-        if pages_total_file.exists():
-            try:
-                pages_total = int(pages_total_file.read_text().strip())
-            except (ValueError, OSError):
-                pass
+        # Маркер общего числа страниц (записывается pre-scan'ом)
+        pages_total = read_pages_total(full_path)
 
         app_logger.debug(f"PNG pages listing: {dir_path} - {len(pages)} pages")
 

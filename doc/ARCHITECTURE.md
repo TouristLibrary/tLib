@@ -109,7 +109,8 @@ TlibWebApp/
 │   ├── alerts/             # Email-уведомления (alerter, digest, recipients)
 │   ├── database/           # Работа с SQLite; connection (open_tlib_db), search_executor (count_search, execute_search)
 │   ├── file_watcher/       # Обработка загрузок (+ notify: письма по факту публикации)
-│   ├── cache/              # Управление кешем (LRU, подготовка, pipeline)
+│   ├── cache/              # Управление кешем (LRU, подготовка, pipeline); cache_watch — heartbeat
+│   │                       #   просмотра PNG (_watch.json): PDF→PNG конвертируется, пока смотрят (PDF_TO_PNG.md)
 │   ├── conversion/         # Конвертация медиа (изображения, PDF→PNG)
 │   ├── seo/                # SEO: parse_report_query, fetch_report_row, build_canonical_query,
 │   │                       #       build_title/description, render_homepage_html/render_report_html
