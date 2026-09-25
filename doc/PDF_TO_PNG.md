@@ -50,7 +50,7 @@ PDF_TO_PNG_ALPHA: bool = False  # True для прозрачного фона
 
 #### Standalone PDF
 ```
-GET /api/cache/{name}/resolve
+POST /api/cache/{name}/prepare
   ↓
 convert_standalone_pdf() → data.cache/{name}/
   ↓
@@ -143,8 +143,8 @@ python app.py
 # Запустить подготовку кэша
 curl -X POST http://localhost:8080/api/cache/09582/prepare
 
-# Проверить статус
-curl http://localhost:8080/api/cache/09582/resolve
+# Проверить статус (pages_total и число готовых PNG)
+curl http://localhost:8080/api/png/09582/09582-png/pages
 
 # Проверка результата
 ls -d data.cache/09582/*-png/
@@ -271,9 +271,8 @@ services/
 │
 routers/cache_router.py             # /prepare и /resolve endpoints
 │   _format_file_list(): передаёт kind/pages/png_dir из _meta.json фронтенду
-│   resolve_cache_item():
-│     - ready + kind="pdf" → {status:"ready", png_dir, pages}  (Step 1)
-│     - preparing → {status:"preparing", stage, detail}  (Step 2 — без PDF-специфики)
+│   resolve_cache_item(): только image/track/all_tracks; kind="pdf" → 400
+│     (PDF-вьюер ходит в /api/png/.../pages напрямую)
 │
 js/modules/ui/results/single.js     # handleSingleResult:
 │   checkFileAvailable() вызывается для всех типов (ZIP и standalone PDF)

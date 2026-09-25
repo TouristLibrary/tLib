@@ -1,4 +1,4 @@
-# Version 1.2 - 21.06.2026 23:35:00 GMT
+# Version 1.4 - 25.09.2026 10:00:00 GMT
 # Тесты безопасности путей cache_router и png_viewer_router (этап 4)
 # Описание: Проверяет, что traverse-векторы в archive_name, body.path и dir_path
 #           корректно отклоняются (400), а легитимные пути работают (не 400/500).
@@ -8,6 +8,8 @@
 #      test_resolve_valid_nested_path_not_rejected (stub-zip -> авто-триггер prepare -> 200).
 # 1.2: тест атрибуции IP/endpoint в _validate_archive_name (spy на security_logger).
 # 1.3: /prepare?probe=1 — проба не запускает подготовку кеша (TestCachePrepareProbe).
+# 1.4: kind=pdf убран из /resolve — traversal-проверки переведены на kind=image,
+#      добавлен TestCacheResolveKind (pdf и неизвестный kind -> 400 без запуска подготовки).
 
 from __future__ import annotations
 
@@ -109,7 +111,7 @@ class TestCacheArchiveNameTraversal:
     def test_resolve_rejects_traversal(self, app_client, bad_name):
         resp = app_client.post(
             f"/api/cache/{bad_name}/resolve",
-            json={"path": "report.pdf", "kind": "pdf"},
+            json={"path": "photo.jpg", "kind": "image"},
         )
         assert resp.status_code == 400, f"ожидался 400 для archive_name={bad_name!r}, получен {resp.status_code}"
 
@@ -179,7 +181,7 @@ class TestCacheResolveBodyPath:
         _make_archive(tmp_dirs["data"], "00001-TST")
         resp = app_client.post(
             "/api/cache/00001-TST/resolve",
-            json={"path": bad_path, "kind": "pdf"},
+            json={"path": bad_path, "kind": "image"},
         )
         assert resp.status_code == 400, (
             f"ожидался 400 для body.path={bad_path!r}, получен {resp.status_code}: {resp.text}"
@@ -215,7 +217,7 @@ class TestCacheResolveBodyPath:
         _make_archive(tmp_dirs["data"], "00001-TST")
         resp = app_client.post(
             "/api/cache/00001-TST/resolve",
-            json={"path": "subdir/report.pdf", "kind": "pdf"},
+            json={"path": "subdir/photo.jpg", "kind": "image"},
         )
         assert resp.status_code == 200, (
             f"валидный path отвергнут (ожидался 200): {resp.status_code} {resp.text}"
@@ -223,6 +225,27 @@ class TestCacheResolveBodyPath:
         assert resp.json().get("status") != "error", (
             f"валидный path вернул status=error: {resp.json()}"
         )
+
+
+class TestCacheResolveKind:
+    """kind=pdf убран из /resolve: PDF-вьюер ходит в /api/png/.../pages напрямую.
+
+    Неизвестный kind не должен проваливаться в авто-запуск подготовки (шаг 4):
+    TestClient выполняет BackgroundTasks синхронно, поэтому отсутствие директории
+    кеша после запроса доказывает, что подготовка не запускалась.
+    """
+
+    @pytest.mark.parametrize("kind", ["pdf", "bogus"])
+    def test_resolve_rejects_unsupported_kind(self, app_client, tmp_dirs, kind):
+        _make_archive(tmp_dirs["data"], "00001-TST")
+        (tmp_dirs["data"] / "00001-TST.pdf").write_bytes(b"%PDF-1.4\n")
+        resp = app_client.post(
+            "/api/cache/00001-TST/resolve",
+            json={"path": "report.pdf", "kind": kind},
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json() == {"status": "error", "message": "Invalid kind"}
+        assert not (tmp_dirs["cache"] / "00001-TST").exists(), "resolve запустил подготовку кеша"
 
 
 # ---------------------------------------------------------------------------

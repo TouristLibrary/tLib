@@ -1,9 +1,10 @@
-// Version 2.3 - 24.09.2026
+// Version 2.4 - 25.09.2026
 // Описание: Сервис для подготовки кеша архивов (eager caching v2).
 //           prepareCache() - fire-and-forget запуск подготовки кеша при клике на таб.
-//           resolveFile() - единый resolve для всех типов контента (pdf, image, track, all_tracks).
+//           resolveFile() - resolve файла из кеша (image, track, all_tracks; PDF-вьюер ходит в /pages).
 // 2.3: оба метода ждут первого жеста пользователя (whenUserGesture) — headless-боты,
 //      исполняющие JS, не запускают конвертацию (resolve тоже её запускает, шаг 4).
+// 2.4: kind=pdf убран из /resolve (сервер отвечает 400).
 
 import { API } from '../config/api.config.js';
 import { fetchJson } from '../utils/fetchUtils.js';
@@ -55,10 +56,10 @@ class CacheWarmService {
     }
     
     /**
-     * Resolve файла из кеша (единый метод для всех типов контента)
+     * Resolve файла из кеша (image, track, all_tracks)
      * @param {string} archiveName - имя архива без расширения
      * @param {Object} options - параметры resolve
-     * @param {string} options.kind - тип контента ('pdf', 'image', 'track', 'all_tracks')
+     * @param {string} options.kind - тип контента ('image', 'track', 'all_tracks')
      * @param {string} [options.path=''] - путь к файлу внутри архива (пустой для all_tracks)
      * @returns {Promise<Object>} - результат resolve
      */

@@ -210,7 +210,7 @@ curl -o tracks.zip http://localhost:8080/api/archive/12345-а/all-tracks
 
 ### Поведение
 
-PDF отдаётся напрямую из `DATA_DIRECTORY`. Конвертация PDF в PNG страницы для встроенного вьюера выполняется отдельно через Cache API (`/api/cache/prepare`, `/api/cache/resolve`).
+PDF отдаётся напрямую из `DATA_DIRECTORY`. Конвертация PDF в PNG страницы для встроенного вьюера выполняется отдельно через Cache API (`/api/cache/prepare`).
 
 ### Заголовки ответа
 
@@ -1281,7 +1281,7 @@ Health check для мониторинга состояния приложени
 
 ## POST /api/cache/{archive_name}/resolve
 
-Resolve статуса кешированного файла. Клиент опрашивает этот endpoint для получения URL готового файла.
+Resolve статуса кешированного файла. Клиент опрашивает этот endpoint для получения URL готового файла (изображения и треки из ZIP). PDF сюда не ходит: png-viewer опрашивает [`/api/png/{dir_path}/pages`](#get-apipngdir_pathpages) напрямую.
 
 ### Параметры
 
@@ -1291,22 +1291,17 @@ Resolve статуса кешированного файла. Клиент оп�
 
 ```json
 {
-  "path": "document.pdf",
-  "kind": "pdf"
+  "path": "1-TST/photo.jpg",
+  "kind": "image"
 }
 ```
 
 | Поле | Значения | Описание |
 |------|----------|----------|
 | path | string | Путь к файлу внутри архива (пустой для all_tracks) |
-| kind | pdf, image, track, all_tracks | Тип запрашиваемого файла |
+| kind | image, track, all_tracks | Тип запрашиваемого файла; иное (в т.ч. `pdf`) — `400 {"status": "error", "message": "Invalid kind"}` |
 
 ### Ответы
-
-**Файл готов (PDF):**
-```json
-{"status": "ready", "png_dir": "12345-а/report-png_A7F3B2E1", "pages": 15}
-```
 
 **Файл готов (image):**
 ```json

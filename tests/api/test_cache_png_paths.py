@@ -59,7 +59,7 @@ def test_resolve_body_path_traversal_returns_400(
     """body.path-traversal -> строго 400 {"status":"error","message":"Invalid path"}."""
     resp = cache_client.post(
         f"/api/cache/{SAMPLE_REPORT}/resolve",
-        json={"path": bad_path, "kind": "pdf"},
+        json={"path": bad_path, "kind": "image"},
     )
     assert resp.status_code == 400, (
         f"body.path={bad_path!r}: ожидался 400, получен {resp.status_code}: {resp.text[:300]}"
@@ -147,8 +147,11 @@ def first_file_from_archive(cache_client: httpx.Client) -> tuple[str, str]:
         pytest.skip(
             f"Кеш сида {SAMPLE_REPORT} пуст — прогрейте кеш, открыв карточку отчёта."
         )
-    entry = files[0]
-    return entry["name"], entry.get("kind", "image")
+    # /resolve принимает только image/track (PDF-вьюер ходит в /pages, kind=pdf -> 400)
+    entry = next((f for f in files if f.get("kind") in ("image", "track")), None)
+    if entry is None:
+        pytest.skip(f"В кеше {SAMPLE_REPORT} нет изображений и треков — resolve проверить не на чем.")
+    return entry["name"], entry["kind"]
 
 
 def test_resolve_valid_path_not_rejected(
@@ -172,6 +175,15 @@ def test_resolve_valid_path_not_rejected(
     assert status_val in _VALID_RESOLVE_STATUSES, (
         f"Неожиданный статус {status_val!r} для валидного пути (kind={kind!r}): {body}"
     )
+
+
+def test_resolve_pdf_kind_returns_400(cache_client: httpx.Client) -> None:
+    """kind=pdf убран из /resolve: путь без потребителя, запускал конвертацию в обход фронтенда."""
+    resp = cache_client.post(
+        f"/api/cache/{SAMPLE_REPORT}/resolve",
+        json={"path": "report.pdf", "kind": "pdf"},
+    )
+    assert resp.status_code == 400, f"kind=pdf: ожидался 400, получен {resp.status_code}: {resp.text[:300]}"
 
 
 # ---------------------------------------------------------------------------

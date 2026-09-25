@@ -1,8 +1,10 @@
-# Version 2.4 - 24.09.2026 19:40:00 GMT
+# Version 2.5 - 25.09.2026 10:00:00 GMT
 # Cache Router для TlibWebApp
 # Описание: API endpoints для eager caching с per-file readiness.
 #           POST /prepare - fire-and-forget запуск подготовки кеша.
-#           POST /resolve - единый resolve для ВСЕХ типов (pdf, image, track, all_tracks).
+#           POST /resolve - resolve для image, track, all_tracks (PDF-вьюер ходит в /api/png/.../pages).
+# 2.5: kind=pdf убран из /resolve — путь без потребителя, запускал convert_standalone_pdf
+#      прямым запросом в обход фронтенда. Неизвестный kind -> 400 (CACHE_RESOLVE_KINDS).
 # 2.4: /prepare?probe=1 — проба без запуска подготовки (статус not_prepared + TOC).
 #      Карточка отчёта рендерится через пробу, чтобы headless-боты, исполняющие JS,
 #      не запускали конвертацию; реальный запуск — только после жеста пользователя.
@@ -31,7 +33,8 @@ from config import (
     CACHE_STATUS_READY, CACHE_STATUS_PREPARING, CACHE_STATUS_STARTED,
     CACHE_STATUS_ALREADY_PREPARING, CACHE_STATUS_NOT_FOUND, CACHE_STATUS_NOT_PREPARED,
     CACHE_STATUS_ERROR,
-    CACHE_STAGE_STARTING, CACHE_STAGE_CONVERTING,
+    CACHE_STAGE_STARTING,
+    CACHE_RESOLVE_KINDS,
 )
 
 # Импорт сервисов
@@ -44,7 +47,6 @@ from services.cache.cache_prepare_service import (
 )
 from services.cache.cache_service import (
     get_cache_dir,
-    get_png_dir_path,
     read_meta,
     is_cache_valid,
     is_cache_valid_from_meta
@@ -65,7 +67,7 @@ router = APIRouter(prefix="/api/cache", tags=["cache"])
 class ResolveRequest(BaseModel):
     """Модель запроса для resolve endpoint."""
     path: str = ""     # zip_path файла (пустой для all_tracks)
-    kind: str          # "pdf" | "image" | "track" | "all_tracks"
+    kind: str          # "image" | "track" | "all_tracks" (CACHE_RESOLVE_KINDS)
 
 
 # ============================================================================
@@ -138,25 +140,10 @@ def _check_file_on_disk(cache_dir: Path, archive_name: str, body: ResolveRequest
     Возвращает ready-ответ или None.
     
     Если meta_file передан (запись из _meta.json для данного файла), использует
-    его данные для быстрого пути: pages для PDF (без glob), cache_path для image
-    (без перебора кандидатов). Если meta_file=None — fallback на filesystem.
+    его данные для быстрого пути: cache_path для image (без перебора кандидатов).
+    Если meta_file=None — fallback на filesystem.
     """
-    if body.kind == "pdf":
-        png_dir = get_png_dir_path(archive_name, body.path)
-        if meta_file and "pages" in meta_file:
-            # Быстрый путь: pages уже известен из meta, не нужен glob("*.png")
-            if png_dir.exists() and png_dir.is_dir():
-                rel = f"{archive_name}/{png_dir.relative_to(cache_dir).as_posix()}"
-                return {"status": CACHE_STATUS_READY, "png_dir": rel, "pages": meta_file["pages"]}
-        else:
-            # Fallback (во время подготовки кэша, когда meta ещё не записана)
-            if png_dir.exists() and png_dir.is_dir():
-                pngs = sorted(png_dir.glob("*.png"))
-                if pngs:
-                    rel = f"{archive_name}/{png_dir.relative_to(cache_dir).as_posix()}"
-                    return {"status": CACHE_STATUS_READY, "png_dir": rel, "pages": len(pngs)}
-
-    elif body.kind == "image":
+    if body.kind == "image":
         if meta_file and "cache_path" in meta_file:
             # Быстрый путь: точный путь файла известен из meta, не нужен перебор кандидатов
             candidate = cache_dir / meta_file["cache_path"]
@@ -324,17 +311,17 @@ async def get_cache_contents(archive_name: str, request: Request):
 @router.post("/{archive_name}/resolve")
 async def resolve_cache_item(archive_name: str, request: Request, body: ResolveRequest, background_tasks: BackgroundTasks):
     """
-    API: единый resolve для ВСЕХ типов (pdf, image, track, all_tracks).
-    Включая standalone PDF.
-    
+    API: resolve файла из ZIP-кеша для image, track, all_tracks.
+    PDF сюда не ходит: png-viewer опрашивает /api/png/.../pages напрямую.
+
     Приоритет проверок (4 шага):
     1. Файл на диске + is_cache_valid()? -> ready (+ os.utime для LRU)
     2. _prepare.json есть? -> preparing (подготовка в процессе)
     3. _meta.json есть и актуален? -> error/not_found (подготовка завершена, файл failed/отсутствует)
-    4. Авто-триггер: data/{name}.zip -> prepare_archive_cache(), data/{name}.pdf -> convert_standalone_pdf()
-    
+    4. Авто-триггер: data/{name}.zip -> prepare_archive_cache()
+
     Returns:
-        - {"status":"ready", "url":"...", "png_dir":"...", "pages":N}
+        - {"status":"ready", "url":"..."}
         - {"status":"preparing", "stage":"...", "detail":"...", "retry_after":1000}
         - {"status":"error", "message":"..."}
         - {"status":"not_found"}
@@ -347,6 +334,10 @@ async def resolve_cache_item(archive_name: str, request: Request, body: ResolveR
             client_ip=client_ip,
             endpoint=f"/api/cache/{archive_name}/resolve",
         )
+
+        # Неизвестный kind иначе провалился бы в шаг 4 и запустил подготовку ZIP
+        if body.kind not in CACHE_RESOLVE_KINDS:
+            return JSONResponse({"status": CACHE_STATUS_ERROR, "message": "Invalid kind"}, status_code=400)
 
         if _is_hidden(request, archive_name):
             return JSONResponse({"status": CACHE_STATUS_NOT_FOUND})
@@ -395,14 +386,6 @@ async def resolve_cache_item(archive_name: str, request: Request, body: ResolveR
         file_found = _check_file_on_disk(cache_dir, archive_name, body, meta_file)
         if file_found:
             if meta_valid:
-                # Если именно этот PDF сейчас конвертируется — возвращаем preparing с png_dir,
-                # чтобы вьюер мог сразу показать пустые страницы и постепенно их заполнять.
-                # Проверяем converting_path чтобы не путать с прогрессом другого PDF в ZIP.
-                if preparing and body.kind == "pdf" and prepare.get("converting_path", "") == body.path:
-                    file_found["status"] = CACHE_STATUS_PREPARING
-                    file_found["pages_total"] = prepare.get("pages_total", 0)
-                    file_found["retry_after"] = CACHE_RETRY_AFTER_MS
-                    return JSONResponse(file_found)
                 # Кеш актуален (или _meta.json ещё не записан -- prepare в процессе)
                 try:
                     os.utime(cache_dir, None)  # LRU: обновить mtime
@@ -450,17 +433,7 @@ async def resolve_cache_item(archive_name: str, request: Request, body: ResolveR
                 "detail": "",
                 "retry_after": CACHE_RETRY_AFTER_MS
             })
-        
-        pdf_path = Path(DATA_DIRECTORY) / f"{archive_name}.pdf"
-        if body.kind == "pdf" and pdf_path.exists() and pdf_path.is_file():
-            background_tasks.add_task(convert_standalone_pdf, pdf_path, archive_name, collector)
-            return JSONResponse({
-                "status": CACHE_STATUS_PREPARING,
-                "stage": CACHE_STAGE_CONVERTING,
-                "detail": "",
-                "retry_after": CACHE_RETRY_AFTER_MS
-            })
-        
+
         return JSONResponse({"status": CACHE_STATUS_NOT_PREPARED})
         
     except ValueError as e:

@@ -1,7 +1,8 @@
-# Version 1.0 - 21.02.2026 00:00:00 GMT
+# Version 1.1 - 25.09.2026 10:00:00 GMT
 # Конфигурация кеша TlibWebApp
 # Описание: Имена файлов и директорий кеша, статусы, стадии подготовки,
 #           таймауты и параметры LRU-очистки.
+# 1.1: CACHE_RESOLVE_KINDS — допустимые kind у /api/cache/{name}/resolve (pdf убран).
 
 # ==================== ФАЙЛЫ И ДИРЕКТОРИИ КЕША ====================
 
@@ -64,3 +65,8 @@ CACHE_STATUS_NONE: str = "none"
 CACHE_STAGE_STARTING: str = "starting"
 CACHE_STAGE_EXTRACTING: str = "extracting"
 CACHE_STAGE_CONVERTING: str = "converting"
+
+# Допустимые kind у POST /api/cache/{name}/resolve.
+# PDF-вьюер ходит в /api/png/.../pages напрямую, поэтому "pdf" здесь нет:
+# неизвестный kind иначе провалился бы в авто-запуск подготовки ZIP.
+CACHE_RESOLVE_KINDS: frozenset = frozenset({"image", "track", "all_tracks"})

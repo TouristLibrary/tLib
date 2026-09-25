@@ -1,4 +1,4 @@
-// Version 1.2 - 20.02.2026 - openOriginal вынесен в archiveFileService.js
+// Version 1.3 - 25.09.2026 - resolveAndWait: kind=pdf убран из /resolve (PDF-вьюер ходит в /pages)
 // Описание: Shared утилиты для всех viewer-стратегий (PDF/Image/Track):
 //   - DOM-утилиты (setActiveLink, showSingleContainer, queryLinks, setupClickDelegates, findLinkByDataset, safeFocusElement)
 //   - HTML-строители (spinnerPlaceholderHtml, prepareFileLink, prepareLinkContext, buildViewersBlockHtml, buildOtherLinkHtml, SVG-иконки)
@@ -448,11 +448,11 @@ export function activateViewerIframe(container, iframe, src, placeholderSelector
  *
  * @param {HTMLElement} container - контейнер viewer'а для показа прогресса
  * @param {string} archiveName - имя архива без расширения
- * @param {string} kind - тип контента ('pdf', 'image', 'track', 'all_tracks')
+ * @param {string} kind - тип контента ('image', 'track', 'all_tracks')
  * @param {string} zipPath - путь к файлу внутри архива (пустой для all_tracks)
  * @param {Object} [options]
  * @param {number} [options.maxAttempts]
- * @returns {Promise<Object>} - результат resolve (status: 'ready', url/png_dir/pages)
+ * @returns {Promise<Object>} - результат resolve (status: 'ready', url)
  * @throws {Error} - при timeout, error, not_prepared, not_found
  */
 export async function resolveAndWait(container, archiveName, kind, zipPath, { maxAttempts = CONSTANTS.LIMITS.RESOLVE_MAX_ATTEMPTS } = {}) {
@@ -472,7 +472,6 @@ export async function resolveAndWait(container, archiveName, kind, zipPath, { ma
         }
 
         if (res.status === 'ready') return res;
-        if (res.status === 'preparing' && res.png_dir) return res;
         if (res.status === 'error') throw new Error(res.message || 'Ошибка подготовки кеша');
         if (res.status === 'not_prepared' || res.status === 'not_found') {
             throw new Error(res.status === 'not_prepared' ? 'Кеш не подготовлен' : 'Файл не найден');
