@@ -1,14 +1,17 @@
-# Version 1.2 - 25.09.2026 12:40:00 GMT
+# Version 1.4 - 26.09.2026 10:00:00 GMT
 # Cache Watch для TlibWebApp
 # Описание: Heartbeat просмотра PNG-директории и её частичное состояние.
 #           png-viewer раз в 2 с опрашивает /api/png/.../pages — роутер отмечает это в _watch.json
 #           (время и страница, которую показывает вьюер). Конвертер PDF→PNG читает heartbeat
-#           между страницами: рендерит запрошенную страницу первой и встаёт на паузу, когда
-#           смотреть перестали. Частичная директория (PNG меньше, чем в _pages_total.txt)
-#           докручивается при следующем просмотре.
+#           между страницами и рендерит только окно вокруг просматриваемой страницы
+#           (first_missing_in_window); окно готово — пауза. Частичная директория
+#           (PNG меньше, чем в _pages_total.txt) докручивается при следующем просмотре.
 # 1.1: touch_watch обновляет mtime папки архива — LRU видит просмотр PDF
 #      (PDF-вьюер не ходит в /resolve, где метку обновляют image/track).
 # 1.2: heartbeat и LRU-метка в отдельных try — сбой одного не маскируется сообщением другого.
+# 1.3: first_missing_in_window — окно рендера PDF: без свежего heartbeat первые
+#      PDF_CONVERT_PREWARM_PAGES страниц, со свежим — lookahead страниц от want.
+# 1.4: generate_png_filename импортируется из cache_service — отложенный импорт убран.
 
 import os
 import time
@@ -16,14 +19,19 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 # Импорт конфигурации
-from config import PNG_WATCH_FILENAME, PNG_PAGES_TOTAL_FILENAME
+from config import (
+    PNG_WATCH_FILENAME,
+    PNG_PAGES_TOTAL_FILENAME,
+    PDF_CONVERT_IDLE_TIMEOUT_SECONDS,
+    PDF_CONVERT_PREWARM_PAGES,
+)
 
 # Импорт логгеров
 from logging_config import app_logger
 
 # Импорт вспомогательных сервисов
 from services.json_io import read_json
-from .cache_service import atomic_write_json
+from .cache_service import atomic_write_json, generate_png_filename
 
 
 def touch_watch(png_dir: Path, want: Optional[int], archive_dir: Path) -> None:
@@ -95,3 +103,30 @@ def is_partial(png_dir: Path) -> bool:
     """
     pages_total = read_pages_total(png_dir)
     return pages_total is not None and count_pngs(png_dir) < pages_total
+
+
+def first_missing_in_window(png_dir: Path, pdf_stem: str, page_count: int, lookahead: int) -> Optional[int]:
+    """
+    Первая недостающая страница окна просмотра — общее правило конвертера и докрутки.
+    Свежий heartbeat (не старше PDF_CONVERT_IDLE_TIMEOUT_SECONDS) со страницей want в пределах
+    документа — окно [want-1, want-1+lookahead): страницы позади want ждут, пока want туда
+    вернётся. Иначе зрителя нет — окно прогрева, первые PDF_CONVERT_PREWARM_PAGES страниц.
+
+    Args:
+        png_dir: PNG-директория
+        pdf_stem: имя PDF без расширения (имена PNG — generate_png_filename)
+        page_count: число страниц PDF
+        lookahead: длина окна вперёд от want (при свежем heartbeat)
+
+    Returns:
+        Номер страницы (0-based) или None, если окно готово
+    """
+    ts, want = read_watch(png_dir)
+    if time.time() - ts <= PDF_CONVERT_IDLE_TIMEOUT_SECONDS and want is not None and want <= page_count:
+        start, length = want - 1, lookahead
+    else:
+        start, length = 0, PDF_CONVERT_PREWARM_PAGES
+    for i in range(start, min(start + length, page_count)):
+        if not (png_dir / generate_png_filename(pdf_stem, i)).exists():
+            return i
+    return None

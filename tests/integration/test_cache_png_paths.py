@@ -1,4 +1,4 @@
-# Version 1.6 - 25.09.2026 15:00:00 GMT
+# Version 1.8 - 26.09.2026 10:00:00 GMT
 # Тесты безопасности путей cache_router и png_viewer_router (этап 4)
 # Описание: Проверяет, что traverse-векторы в archive_name, body.path и dir_path
 #           корректно отклоняются (400), а легитимные пути работают (не 400/500).
@@ -13,6 +13,9 @@
 # 1.5: TestConvertWhileWatching — /pages?want= пишет _watch.json, partial-директория
 #      запускает resume_pdf_conversion, /prepare?probe=1 не отдаёт pages для partial.
 # 1.6: /pages обновляет mtime папки архива (LRU-метка просмотра PDF).
+# 1.7: /prepare при валидном кеше больше не докручивает PDF на паузе — триггер докрутки
+#      только /pages (spy resume_pdf_conversion — только в png_viewer_router).
+# 1.8: /prepare?probe=1 отдаёт pages и для PDF на паузе — вьюер открывается без жеста.
 
 from __future__ import annotations
 
@@ -347,17 +350,16 @@ def _make_partial_cache(data_dir: Path, cache_dir: Path, archive_name: str) -> P
 
 @pytest.fixture()
 def resume_calls(monkeypatch) -> list[tuple]:
-    """Spy на resume_pdf_conversion в обоих роутерах.
+    """Spy на resume_pdf_conversion в png_viewer_router — единственном триггере докрутки.
 
     TestClient выполняет BackgroundTasks синхронно после ответа — вызов виден сразу.
     """
     calls: list[tuple] = []
 
-    async def spy(archive_name, png_dir_rel, stats_collector=None):
+    async def spy(archive_name, png_dir_rel):
         calls.append((archive_name, png_dir_rel))
 
     monkeypatch.setattr(png_viewer_router_module, "resume_pdf_conversion", spy)
-    monkeypatch.setattr(cache_router_module, "resume_pdf_conversion", spy)
     return calls
 
 
@@ -413,25 +415,31 @@ class TestConvertWhileWatching:
         assert resp.status_code == 200, resp.text
         assert resume_calls == []
 
-    def test_probe_hides_pages_of_partial_pdf(self, app_client, tmp_dirs, resume_calls):
-        """Частичный кеш для фронтенда не «готов»: без pages гейт по жесту продолжает работать."""
+    def test_probe_returns_pages_of_partial_pdf(self, app_client, tmp_dirs):
+        """PDF на паузе отдаётся с полным числом страниц: вьюер открывается сразу, без жеста,
+        показывает готовые страницы и докручивает остальные через опрос /pages."""
         _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
         resp = app_client.post("/api/cache/00001-TST/prepare?probe=1")
         assert resp.status_code == 200, resp.text
         data = resp.json()
         assert data["status"] == "ready"
         pdf = data["files"][0]
-        assert "pages" not in pdf
+        assert pdf["pages"] == 3
         assert pdf["png_dir"] == "00001-TST/dir1/report-png"
-        assert resume_calls == [], "проба не должна запускать докрутку"
 
-    def test_prepare_resumes_partial_pdf(self, app_client, tmp_dirs, resume_calls):
-        """Прогрев по жесту возобновляет конвертацию, не дожидаясь первого /pages."""
+    def test_prepare_does_not_resume_partial_pdf(self, app_client, tmp_dirs):
+        """/prepare при валидном кеше не докручивает PDF на паузе: без зрителя окно рендера —
+        первые страницы, докрутка была бы холостым lock + перераспаковкой.
+
+        Докрутка stub-кеша (пустой ZIP) упала бы и перевела запись в error — запись остаётся partial.
+        """
         _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
         resp = app_client.post("/api/cache/00001-TST/prepare")
         assert resp.status_code == 200, resp.text
         assert resp.json()["status"] == "ready"
-        assert resume_calls == [("00001-TST", "dir1/report-png")]
+        meta = json.loads((tmp_dirs["cache"] / "00001-TST" / "_meta.json").read_text(encoding="utf-8"))
+        assert (meta["files"][0]["status"], meta["files"][0]["pages_done"]) == ("partial", 1)
+        assert not (tmp_dirs["cache"] / "00001-TST" / "_prepare.lockdir").exists()
 
 
 # ---------------------------------------------------------------------------

@@ -21,10 +21,11 @@ test.describe('Navigation', () => {
       .toMatch(/TST/);
   });
 
-  test('Редирект кириллица (1-ш)', async ({ page }) => {
+  test('Редирект кириллица (1-Ш)', async ({ page }) => {
     skipIfSeedMissing(test, '1-ш');
     await page.goto('/?1-%D1%88', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.single-result-formatted')).toContainText('#1-ш', { timeout: 15000 });
+    // В БД ДопШифр хранится в верхнем регистре; строчный URL всё равно находит отчёт
+    await expect(page.locator('.single-result-formatted')).toContainText('#1-Ш', { timeout: 15000 });
   });
 
   test('Legacy doc.aspx redirect @smoke', async ({ page }) => {
@@ -59,7 +60,7 @@ test.describe('Navigation', () => {
 
   test('Навигация назад', async ({ page }) => {
     await gotoMainReady(page);
-    await page.locator('input[name="ГодС"]').fill('2024');
+    await page.locator('input[name="ГодС"]').fill('2020');
     await page.locator('#searchButton').click();
     await expect(page.locator('#results-table')).toBeVisible({ timeout: 15000 });
     const link = page.locator('#results-table tbody tr td a.report-link:not(.shifr-link)').first();

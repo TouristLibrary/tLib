@@ -1,8 +1,10 @@
-# Version 2.0 - 06.02.2026 00:00:00 GMT
+# Version 2.1 - 26.09.2026 10:00:00 GMT
 # Cache Service для TlibWebApp
 # Описание: Централизованный сервис кеширования без версионных хешей.
 #           Предоставляет единую логику путей и очистки LRU по целым папкам архивов.
 #           Функции чтения кеша (_meta.json, _prepare.json) вызываются из cache_router и cache_prepare_service.
+# 2.1: generate_png_filename перенесён из pdf_to_png_service — имя PNG страницы нужно и конвертеру,
+#      и окну рендера в cache_watch (без отложенного циклического импорта).
 
 import os
 import json
@@ -63,6 +65,20 @@ def get_png_dir_path(archive_name: str, pdf_zip_path: str) -> Path:
     """
     p = Path(pdf_zip_path)
     return get_cache_dir(archive_name) / p.parent / f"{p.stem}-png"
+
+
+def generate_png_filename(pdf_stem: str, page_num: int) -> str:
+    """
+    Генерирует имя PNG файла.
+
+    Args:
+        pdf_stem: Имя PDF без расширения
+        page_num: Номер страницы (0-индексированный)
+
+    Returns:
+        Имя файла вида "имяPDF_0001.png"
+    """
+    return f"{pdf_stem}_{page_num + 1:04d}.png"
 
 
 def get_meta_path(archive_name: str) -> Path:

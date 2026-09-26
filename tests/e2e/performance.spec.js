@@ -34,7 +34,7 @@ test.describe('Performance', () => {
     });
 
     await gotoMainReady(page);
-    await page.locator('input[name="ГодС"]').fill('2024');
+    await page.locator('input[name="ГодС"]').fill('2020');
     await page.locator('#searchButton').click();
     await expect(page.locator('#results-table')).toBeVisible({ timeout: 15000 });
     // Ждём завершения фоновых вызовов (справочники, reports-count, auth/me)

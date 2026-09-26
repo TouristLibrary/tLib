@@ -14,7 +14,7 @@ test.describe('Responsive', () => {
   test('Tablet (768x1024)', async ({ page }) => {
     await page.setViewportSize({ width: 768, height: 1024 });
     await gotoMainReady(page);
-    await page.locator('input[name="ГодС"]').fill('2024');
+    await page.locator('input[name="ГодС"]').fill('2020');
     await page.locator('#searchButton').click();
     await expect(page.locator('#results-table')).toBeVisible({ timeout: 30000 });
   });

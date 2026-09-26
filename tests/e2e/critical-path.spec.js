@@ -17,7 +17,7 @@ test.describe('Critical path', () => {
 
   test('Поиск с фильтром (таблица результатов) @critical @smoke', async ({ page }) => {
     await gotoMainReady(page);
-    await page.locator('input[name="ГодС"]').fill('2024');
+    await page.locator('input[name="ГодС"]').fill('2020');
     await page.locator('#searchButton').click();
     await expect(page.locator('#results-table')).toBeVisible({ timeout: 15000 });
     const rows = page.locator('#results-table tbody tr');
@@ -29,7 +29,7 @@ test.describe('Critical path', () => {
     await expect(page.locator('#sortSelect')).toBeVisible();
     await expect(page.locator('#sortDirectionBtn')).toBeVisible();
     await page.locator('#sortSelect').selectOption('Категория');
-    await page.locator('input[name="ГодС"]').fill('2024');
+    await page.locator('input[name="ГодС"]').fill('2020');
     await page.locator('#searchButton').click();
     await expect(page.locator('#results-table')).toBeVisible({ timeout: 15000 });
     await page.locator('#sortDirectionBtn').click();

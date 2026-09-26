@@ -1,4 +1,4 @@
-# Version 2.1 - 25.09.2026 12:00:00 GMT
+# Version 2.2 - 26.09.2026 09:00:00 GMT
 # Cache Pipeline для TlibWebApp
 # Описание: Конвертационные шаги подготовки кеша.
 #           Извлечение, конвертация PDF/изображений/GPS, запись meta.
@@ -7,6 +7,8 @@
 #      и pages_done; хелперы докрутки extract_single_member, find_pdf_entry,
 #      first_partial_png_dir, update_meta_file_entry. convert_pdfs сопоставляет пути в posix,
 #      как convert_images, — иначе на Windows вложенные PDF не находились в files_info.
+# 2.2: first_partial_png_dir удалён — /prepare больше не докручивает PDF на паузе.
+#      Результат конвертера — (pages_done, page_count, rendered, completed).
 
 import shutil
 import zipfile
@@ -321,7 +323,7 @@ async def convert_pdfs(archive_name: str, zip_path: Path, cache_dir: Path,
                 file_entry["error"] = str(result)
                 continue
             
-            pages_done, page_count, _total_size, completed = result
+            pages_done, page_count, _rendered, completed = result
             
             # Обновляем file_entry с успешным результатом
             file_entry["png_dir"] = (Path(rel_path_str).parent / f"{Path(rel_path_str).stem}-png").as_posix()
@@ -686,17 +688,6 @@ def find_pdf_entry(meta: dict, png_dir_rel: str) -> Optional[dict]:
         if entry.get("kind") == "pdf" and entry.get("png_dir") \
                 and Path(entry["png_dir"]).as_posix() == png_dir_rel:
             return entry
-    return None
-
-
-def first_partial_png_dir(meta: dict) -> Optional[str]:
-    """
-    PNG-директория первого PDF на паузе (status=partial) или None.
-    Порядок — как в meta (порядок файлов в архиве); приоритета между PDF нет.
-    """
-    for entry in meta.get("files", []):
-        if entry.get("status") == CACHE_FILE_STATUS_PARTIAL and entry.get("png_dir"):
-            return Path(entry["png_dir"]).as_posix()
     return None
 
 

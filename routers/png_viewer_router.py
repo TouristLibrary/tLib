@@ -1,13 +1,15 @@
-# Version 2.4 - 25.09.2026 12:40:00 GMT
+# Version 2.5 - 26.09.2026 09:00:00 GMT
 # PNG Viewer Router для TlibWebApp
 # Описание: API endpoints для PNG viewer. Предоставляет листинг PNG директорий в data.cache
 #           и списки PNG файлов для просмотра. Используется embedded-вьюером /png-viewer.
 #           Логика resolve переехала в единый cache_router POST /resolve.
+# 2.5: рендер PDF по окну просмотра — /pages единственный триггер докрутки; решение «докручивать ли»
+#      (гистерезис по окну) — в resume_pdf_conversion, которая больше не учитывает «В кэш».
+# 2.4: имя архива и путь директории для heartbeat/докрутки берутся из проверенного full_path.
+# 2.3: /pages обновляет mtime папки архива (touch_watch) — LRU не вытесняет читаемый PDF.
 # 2.2: /pages — heartbeat просмотра для конвертации PDF, пока смотрят: пишет _watch.json
 #      (параметр want — страница, которую показывает вьюер) и возобновляет частичную
 #      конвертацию (resume_pdf_conversion), если она на паузе.
-# 2.4: имя архива и путь директории для heartbeat/докрутки берутся из проверенного full_path.
-# 2.3: /pages обновляет mtime папки архива (touch_watch) — LRU не вытесняет читаемый PDF.
 # 2.1: /pages переведён на канонический validate_and_resolve_under_base() (§3);
 #      _is_safe_dirname и ручная startswith-проверка удалены;
 #      _list_png_files использует .resolve() базы для корректного relative_to.
@@ -183,8 +185,9 @@ async def get_pages(
     Boundary проверка — через канонический validate_and_resolve_under_base() (§3).
 
     Запрос — heartbeat просмотра: png-viewer опрашивает /pages раз в 2 с, пока страниц
-    на диске меньше pages_total. Конвертер работает, только пока heartbeat свежий,
-    и первой рендерит страницу want; частичная конвертация на паузе возобновляется.
+    на диске меньше pages_total. Конвертер рендерит окно страниц от want (первой — саму want);
+    частичная конвертация на паузе возобновляется, когда впереди от want готово меньше
+    половины окна (единственный триггер докрутки).
 
     Args:
         dir_path: путь к директории (например: "12345-ABC/dir1/report-png")
@@ -242,8 +245,7 @@ async def get_pages(
         # Heartbeat просмотра: конвертер PDF работает, пока директорию смотрят; заодно LRU-метка архива
         touch_watch(full_path, want if want is not None and want >= 1 else None, cache_root / archive_name)
         if is_partial(full_path) and not is_preparing(archive_name):
-            collector = getattr(request.app.state, "stats_collector", None)
-            background_tasks.add_task(resume_pdf_conversion, archive_name, png_dir_rel, collector)
+            background_tasks.add_task(resume_pdf_conversion, archive_name, png_dir_rel)
 
         # Получаем список файлов (full_path resolved → _list_png_files использует resolved базу)
         pages = _list_png_files(full_path)

@@ -29,13 +29,13 @@ test.describe('Search', () => {
 
   test('Race condition (быстрые поиски)', async ({ page }) => {
     await gotoMainReady(page);
-    await page.locator('input[name="ГодС"]').fill('2020');
+    await page.locator('input[name="ГодС"]').fill('2024');
     await page.locator('#searchButton').click();
     await page.locator('input[name="ГодС"]').fill('2021');
     await page.locator('#searchButton').click();
-    await page.locator('input[name="ГодС"]').fill('2024');
+    await page.locator('input[name="ГодС"]').fill('2020');
     await page.locator('#searchButton').click();
-    await expect(page).toHaveURL(/2024/, { timeout: 15000 });
+    await expect(page).toHaveURL(/2020/, { timeout: 15000 });
     await expect(page.locator('#results-table')).toBeVisible();
   });
 
