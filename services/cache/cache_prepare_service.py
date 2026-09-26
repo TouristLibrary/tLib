@@ -1,4 +1,4 @@
-# Version 2.3 - 26.09.2026 09:00:00 GMT
+# Version 2.4 - 26.09.2026 12:21:58 GMT
 # Cache Prepare Service для TlibWebApp
 # Описание: Централизованный сервис подготовки кеша архивов.
 #           Единственный владелец _prepare.json и lock-логики.
@@ -15,6 +15,9 @@
 #      оценивается по окну, а не по всему PDF; в «PDF conversion resumed» — rendered.
 #      record_cache_prepared — всегда при записи _meta.json подготовкой (partial тоже считается),
 #      докрутка не считается: иначе отчёт, дочитанный до конца, учитывался бы дважды.
+# 2.4: место в кеше освобождается не по оценке «источник × множитель» до работы, а в конце
+#      запуска — ensure_cache_space(cache_size_bytes) после записи _meta.json, по факту.
+#      В подготовке — после лога и счётчика «В кэш»: сбой обхода не маскирует готовый кеш.
 
 import os
 import json
@@ -31,8 +34,6 @@ from config import (
     CACHE_STALE_LOCK_TIMEOUT_MINUTES,
     CACHE_PREPARE_STATUS_FILENAME,
     CACHE_LOCK_DIRNAME,
-    CACHE_ZIP_SIZE_MULTIPLIER,
-    CACHE_PDF_SIZE_MULTIPLIER,
     CACHE_STATUS_PREPARING, CACHE_STATUS_NONE, CACHE_STATUS_ERROR,
     CACHE_FILE_STATUS_PARTIAL,
     CACHE_STAGE_STARTING, CACHE_STAGE_CONVERTING,
@@ -339,41 +340,40 @@ async def prepare_archive_cache(archive_name: str, zip_path: Path, stats_collect
         
         # Шаг 5: Удаляем старый контент
         _purge_old_content(cache_dir)
-        
-        # Шаг 6: Освобождаем место в кеше
-        # Эвристика: сжатый размер * множитель
-        estimated_size = int(zip_path.stat().st_size * CACHE_ZIP_SIZE_MULTIPLIER)
-        ensure_cache_space(estimated_size)
-        
-        # Шаг 7: Извлекаем файлы из архива и собираем информацию
+
+        # Шаг 6: Извлекаем файлы из архива и собираем информацию
         files_info = await extract_files(archive_name, zip_path, cache_dir, write_prepare_status)
 
-        # Шаг 8: Конвертируем GPS треки и получаем информацию о geo архиве
+        # Шаг 7: Конвертируем GPS треки и получаем информацию о geo архиве
         geo_archive_info = await convert_gps_tracks(archive_name, zip_path, cache_dir, write_prepare_status)
-        
-        # Шаг 9: Конвертируем PDF и обновляем files_info
+
+        # Шаг 8: Конвертируем PDF и обновляем files_info
         if PDF_TO_PNG_ENABLED:
             await convert_pdfs(archive_name, zip_path, cache_dir, files_info, write_prepare_status)
-        
-        # Шаг 10: Конвертируем изображения и обновляем files_info
+
+        # Шаг 9: Конвертируем изображения и обновляем files_info
         if IMAGE_TO_JPG_ENABLED:
             await convert_images(archive_name, zip_path, cache_dir, files_info, write_prepare_status)
-        
-        # Шаг 11: Удаляем _work/
+
+        # Шаг 10: Удаляем _work/
         work_dir = cache_dir / CACHE_WORK_DIRNAME
         try:
             if work_dir.exists():
                 shutil.rmtree(work_dir)
         except Exception as e:
             app_logger.warning(f"Failed to cleanup _work/ for {archive_name}: {e}")
-        
-        # Шаг 12: Записываем _meta.json атомарно с полной информацией
-        await write_meta(archive_name, zip_path, cache_dir, files_info, geo_archive_info)
-        
+
+        # Шаг 11: Записываем _meta.json атомарно с полной информацией
+        size = await write_meta(archive_name, zip_path, cache_dir, files_info, geo_archive_info)
+
         # partial — признак архива с PDF на паузе; нагрузку меряет rendered в «PDF conversion run»
         log_with_data(logging.INFO, "Cache prepared successfully", archive=archive_name,
                       partial=_has_partial(files_info))
         _record_cache_prepared(stats_collector)
+
+        # Шаг 12: Освобождаем место по фактическому размеру: своя папка под lock в обход не входит.
+        # После учёта подготовки — сбой обхода кеша не должен маскировать готовый кеш
+        ensure_cache_space(size)
 
     except Exception as e:
         app_logger.error(f"Error preparing cache for {archive_name}: {e}", exc_info=True)
@@ -426,13 +426,8 @@ async def convert_standalone_pdf(pdf_path: Path, archive_name: str, stats_collec
         
         # Шаг 5: Удаляем старые PNG
         _purge_old_content(cache_dir)
-        
-        # Шаг 6: Освобождаем место
-        # Эвристика: PDF размер * множитель
-        estimated_size = int(pdf_path.stat().st_size * CACHE_PDF_SIZE_MULTIPLIER)
-        ensure_cache_space(estimated_size)
-        
-        # Шаг 7: Конвертируем PDF -> PNG
+
+        # Шаг 6: Конвертируем PDF -> PNG
         from services.conversion.pdf_to_png_service import convert_pdf_to_directory, count_pdf_pages
         
         png_dir = get_png_dir_path(archive_name, pdf_path.name)
@@ -460,13 +455,17 @@ async def convert_standalone_pdf(pdf_path: Path, archive_name: str, stats_collec
         
         pages_done, page_count, _rendered, completed = result
 
-        # Шаг 8: Записываем _meta.json (на паузе — status=partial, докрутит resume_pdf_conversion)
-        await write_meta_standalone_pdf(archive_name, pdf_path, png_dir, page_count,
-                                        pages_done=None if completed else pages_done)
+        # Шаг 7: Записываем _meta.json (на паузе — status=partial, докрутит resume_pdf_conversion)
+        size = await write_meta_standalone_pdf(archive_name, pdf_path, png_dir, page_count,
+                                               pages_done=None if completed else pages_done)
 
         if completed:
             log_with_data(logging.INFO, "Standalone PDF converted", pdf=archive_name, pages=page_count)
         _record_cache_prepared(stats_collector)
+
+        # Шаг 8: Освобождаем место по фактическому размеру: своя папка под lock в обход не входит.
+        # После учёта подготовки — сбой обхода кеша не должен маскировать готовый кеш
+        ensure_cache_space(size)
 
     except Exception as e:
         app_logger.error(f"Error converting standalone PDF {archive_name}: {e}", exc_info=True)
@@ -558,19 +557,13 @@ async def resume_pdf_conversion(archive_name: str, png_dir_rel: str) -> None:
         write_prepare_status(archive_name, stage=CACHE_STAGE_CONVERTING, sub="pdf",
                              pages_total=entry.get("pages", 0), converting_path=zip_member)
 
-        # Шаг 5: освобождаем место под окно, а не под весь PDF: кеш живёт у лимита, и оценка
-        # «весь PDF × множитель» на каждой докрутке вытесняла бы чужие папки зря
-        pages = max(entry.get("pages", 0), 1)
-        window = min(PDF_CONVERT_LOOKAHEAD_PAGES, pages)
-        ensure_cache_space(int(entry.get("size", 0) * CACHE_PDF_SIZE_MULTIPLIER * window / pages))
-
-        # Шаг 6: источник — standalone PDF напрямую, из ZIP — перераспаковка одного файла
+        # Шаг 5: источник — standalone PDF напрямую, из ZIP — перераспаковка одного файла
         if source_path.suffix.lower() == ".pdf":
             pdf_path = source_path
         else:
             pdf_path = await extract_single_member(source_path, zip_member, work_dir)
 
-        # Шаг 7: докручиваем недостающие страницы
+        # Шаг 6: докручиваем недостающие страницы
         from services.conversion.pdf_to_png_service import convert_pdf_to_directory
 
         def _pdf_progress(done, total):
@@ -591,12 +584,16 @@ async def resume_pdf_conversion(archive_name: str, png_dir_rel: str) -> None:
 
         pages_done, page_count, rendered, completed = result
 
-        # Шаг 8: обновляем запись; завершённая выглядит как обычная (без status/pages_done)
+        # Шаг 7: обновляем запись; завершённая выглядит как обычная (без status/pages_done)
         if completed:
             fields = {"status": None, "pages_done": None}
         else:
             fields = {"pages_done": pages_done}
-        update_meta_file_entry(archive_name, png_dir_rel, fields)
+        meta = update_meta_file_entry(archive_name, png_dir_rel, fields)
+
+        # Шаг 8: освобождаем место по фактическому размеру папки с новыми страницами
+        if meta is not None:
+            ensure_cache_space(meta["cache_size_bytes"])
 
         log_with_data(logging.INFO, "PDF conversion resumed", archive=archive_name, png_dir=png_dir_rel,
                       rendered=rendered, done=pages_done, total=page_count, completed=completed)

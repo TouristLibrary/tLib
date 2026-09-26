@@ -1,4 +1,4 @@
-# Version 2.2 - 26.09.2026 09:00:00 GMT
+# Version 2.3 - 26.09.2026 11:49:27 GMT
 # Cache Pipeline для TlibWebApp
 # Описание: Конвертационные шаги подготовки кеша.
 #           Извлечение, конвертация PDF/изображений/GPS, запись meta.
@@ -9,6 +9,8 @@
 #      как convert_images, — иначе на Windows вложенные PDF не находились в files_info.
 # 2.2: first_partial_png_dir удалён — /prepare больше не докручивает PDF на паузе.
 #      Результат конвертера — (pages_done, page_count, rendered, completed).
+# 2.3: cache_size_bytes не учитывает _work/, lockdir и _prepare.json — докрутка считала размер,
+#      пока перераспакованный PDF лежал в _work/. write_meta* возвращают размер для ensure_cache_space.
 
 import shutil
 import zipfile
@@ -28,6 +30,8 @@ from config import (
     FILTER_MACOS_METADATA,
     CACHE_META_FILENAME,
     CACHE_WORK_DIRNAME,
+    CACHE_LOCK_DIRNAME,
+    CACHE_PREPARE_STATUS_FILENAME,
     GEO_ARCHIVE_SUFFIX,
     PNG_PAGES_TOTAL_FILENAME,
     CACHE_STATUS_ERROR,
@@ -480,8 +484,10 @@ async def convert_images(archive_name: str, zip_path: Path, cache_dir: Path,
 
 def _compute_cache_dir_size(cache_dir: Path) -> int:
     """
-    Возвращает суммарный размер всех файлов в cache_dir (байты).
-    Исключает временные файлы (.tmp-*).
+    Возвращает размер того, что остаётся в cache_dir после снятия lock (байты).
+    Вызывается под lock: _work/, lockdir и _prepare.json к этому моменту ещё на диске,
+    но удаляются в finally — в cache_size_bytes их учитывать нельзя. Исключает и
+    временные файлы (.tmp-*).
 
     Args:
         cache_dir: путь к директории кеша архива
@@ -489,27 +495,38 @@ def _compute_cache_dir_size(cache_dir: Path) -> int:
     Returns:
         Размер в байтах, 0 при ошибке
     """
+    # Фильтр по верхнему уровню, а не по f.name: info.txt внутри lockdir иначе не отсеется
+    transient = (CACHE_WORK_DIRNAME, CACHE_LOCK_DIRNAME, CACHE_PREPARE_STATUS_FILENAME)
     try:
-        return sum(
-            f.stat().st_size
-            for f in cache_dir.rglob('*')
-            if f.is_file() and '.tmp-' not in f.name
-        )
+        total = 0
+        for item in cache_dir.iterdir():
+            if item.name in transient:
+                continue
+            files = item.rglob('*') if item.is_dir() else (item,)
+            total += sum(
+                f.stat().st_size
+                for f in files
+                if f.is_file() and '.tmp-' not in f.name
+            )
+        return total
     except Exception:
         return 0
 
 
-async def write_meta(archive_name: str, zip_path: Path, cache_dir: Path, 
-                    files_info: list[dict], geo_archive_info: dict) -> None:
+async def write_meta(archive_name: str, zip_path: Path, cache_dir: Path,
+                    files_info: list[dict], geo_archive_info: dict) -> int:
     """
     Записывает _meta.json с каталогом всех файлов.
-    
+
     Args:
         archive_name: имя архива
         zip_path: путь к ZIP
         cache_dir: путь к директории кеша
         files_info: информация о всех файлах
         geo_archive_info: информация о GPS архиве
+
+    Returns:
+        cache_size_bytes — вызывающему для ensure_cache_space
     """
     stat = zip_path.stat()
     
@@ -563,8 +580,9 @@ async def write_meta(archive_name: str, zip_path: Path, cache_dir: Path,
     
     meta_path = cache_dir / CACHE_META_FILENAME
     atomic_write_json(meta_path, meta)
-    
+
     app_logger.debug(f"Meta written for {archive_name}: {stats['total']} files, {stats['errors']} errors")
+    return meta["cache_size_bytes"]
 
 
 async def write_meta_standalone_pdf(
@@ -573,16 +591,19 @@ async def write_meta_standalone_pdf(
     png_dir: Path,
     pages: int,
     pages_done: Optional[int] = None
-) -> None:
+) -> int:
     """
     Записывает _meta.json для standalone PDF.
-    
+
     Args:
         archive_name: имя архива
         pdf_path: путь к PDF
         png_dir: путь к PNG директории
         pages: количество страниц
         pages_done: число готовых страниц, если конвертация на паузе (None — завершена)
+
+    Returns:
+        cache_size_bytes — вызывающему для ensure_cache_space
     """
     cache_dir = get_cache_dir(archive_name)
     stat = pdf_path.stat()
@@ -622,6 +643,7 @@ async def write_meta_standalone_pdf(
     atomic_write_json(meta_path, meta)
     
     app_logger.debug(f"Standalone PDF meta written for {archive_name}: {pages} pages")
+    return meta["cache_size_bytes"]
 
 
 async def write_meta_with_error(archive_name: str, pdf_path: Path, error: str) -> None:

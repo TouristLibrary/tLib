@@ -1,10 +1,12 @@
-# Version 2.1 - 26.09.2026 10:00:00 GMT
+# Version 2.2 - 26.09.2026 12:22:10 GMT
 # Cache Service для TlibWebApp
 # Описание: Централизованный сервис кеширования без версионных хешей.
 #           Предоставляет единую логику путей и очистки LRU по целым папкам архивов.
 #           Функции чтения кеша (_meta.json, _prepare.json) вызываются из cache_router и cache_prepare_service.
 # 2.1: generate_png_filename перенесён из pdf_to_png_service — имя PNG страницы нужно и конвертеру,
 #      и окну рендера в cache_watch (без отложенного циклического импорта).
+# 2.2: ensure_cache_space вызывается в конце запуска с фактическим размером своей папки;
+#      в «Cache cleanup needed» он подписан own, а не required.
 
 import os
 import json
@@ -179,14 +181,18 @@ def is_cache_valid(archive_name: str, source_path: Path) -> bool:
 
 def ensure_cache_space(required_size: int) -> None:
     """
-    Освобождает место в кеше для нового файла если необходимо.
-    
+    Освобождает место в кеше, если своя папка вместе с чужими превышает лимит.
+
     Использует стратегию LRU по целым папкам архивов (не по отдельным файлам).
     Сортировка по mtime папки, удаление через shutil.rmtree().
     ПРОПУСКАЕТ папки с _prepare.lockdir внутри (активная подготовка).
-    
+
+    Вызывается в конце запуска подготовки/докрутки, после записи _meta.json: размер
+    уже известен точно, а не оценён заранее. Проверка — «чужие + своя ≤ MAX_CACHE_SIZE».
+
     Args:
-        required_size: Размер файла который нужно добавить в кеш (в байтах)
+        required_size: размер собственной папки вызывающего (cache_size_bytes, в байтах).
+            Папка в момент вызова под lock и в обход не входит — иначе считалась бы дважды
     """
     cache_dir = Path(CACHE_DIRECTORY)
     
@@ -240,7 +246,7 @@ def ensure_cache_space(required_size: int) -> None:
     
     app_logger.info(
         f"Cache cleanup needed: current {total_size / 1024 / 1024:.2f} MB + "
-        f"required {required_size / 1024 / 1024:.2f} MB > "
+        f"own {required_size / 1024 / 1024:.2f} MB > "
         f"limit {MAX_CACHE_SIZE / 1024 / 1024:.2f} MB"
     )
     

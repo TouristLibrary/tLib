@@ -1,4 +1,4 @@
-# Version 2.0 - 26.09.2026 09:00:00 GMT
+# Version 2.1 - 26.09.2026 11:49:27 GMT
 # Тесты рендера PDF по окну просмотра (services/conversion/pdf_to_png_service.py,
 # services/cache/cache_watch.first_missing_in_window, cache_prepare_service.resume_pdf_conversion)
 # Описание: Без свежего heartbeat конвертер рендерит только первые K страниц (прогрев), со свежим —
@@ -11,6 +11,8 @@
 # 1.1: порядок рендеринга — по снимкам готовых PNG перед каждой страницей (без mtime);
 #      сбой докрутки закрывает директорию на готовых страницах, повторная докрутка — no-op.
 # 2.0: переписаны под окно просмотра (K/N подменяются малыми) вместо окна тишины IDLE_TIMEOUT.
+# 2.1: ensure_cache_space вызывается в конце запуска с cache_size_bytes из записанной meta;
+#      повторная подготовка валидного кеша и холостая докрутка место не освобождают.
 
 import asyncio
 import json
@@ -25,7 +27,6 @@ import services.cache.cache_prepare_service as prepare_service
 import services.cache.cache_service as cache_service_module
 import services.cache.cache_watch as cache_watch_module
 import services.conversion.pdf_to_png_service as pdf_service
-from config import CACHE_PDF_SIZE_MULTIPLIER
 from services.cache.cache_watch import is_partial
 from services.cache.cache_prepare_service import (
     convert_standalone_pdf,
@@ -220,20 +221,25 @@ def _make_zip(tmp_path, archive_name, member="dir1/report.pdf"):
     return source
 
 
-def test_standalone_pdf_partial_then_resume(tmp_path, cache_root, window):
+def test_standalone_pdf_partial_then_resume(tmp_path, cache_root, window, monkeypatch):
     window(2, 4)
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     source = data_dir / "00002-TST.pdf"
     _make_pdf(source)
     collector = _Collector()
+    space = []
+    monkeypatch.setattr(prepare_service, "ensure_cache_space", space.append)
 
     _run(convert_standalone_pdf(source, "00002-TST", collector))
 
-    entry = _meta(cache_root, "00002-TST")["files"][0]
+    meta = _meta(cache_root, "00002-TST")
+    entry = meta["files"][0]
     assert entry["status"] == "partial"
     assert (entry["pages"], entry["pages_done"]) == (PAGES, 2)
     assert collector.cached == 1, "подготовка с PDF на паузе учитывается в «В кэш»"
+    # Место освобождается после записи meta, по фактическому размеру папки
+    assert space == [meta["cache_size_bytes"]]
     png_dir = cache_root / "00002-TST" / "00002-TST-png"
     first_page_mtime = (png_dir / "00002-TST_0001.png").stat().st_mtime_ns
 
@@ -241,8 +247,10 @@ def test_standalone_pdf_partial_then_resume(tmp_path, cache_root, window):
     _watch(png_dir, want=3)
     _run(resume_pdf_conversion("00002-TST", "00002-TST-png"))
 
-    entry = _meta(cache_root, "00002-TST")["files"][0]
+    meta = _meta(cache_root, "00002-TST")
+    entry = meta["files"][0]
     assert "status" not in entry and "pages_done" not in entry
+    assert space[1:] == [meta["cache_size_bytes"]]
     assert len(list(png_dir.glob("*.png"))) == PAGES
     assert (png_dir / "00002-TST_0001.png").stat().st_mtime_ns == first_page_mtime
     _assert_lock_released(cache_root, "00002-TST")
@@ -252,14 +260,19 @@ def test_zip_pdf_partial_then_resume(tmp_path, cache_root, window, monkeypatch):
     window(2, 4)
     source = _make_zip(tmp_path, "00001-TST")
     collector = _Collector()
+    space = []
+    monkeypatch.setattr(prepare_service, "ensure_cache_space", space.append)
 
     _run(prepare_archive_cache("00001-TST", source, collector))
 
+    prepared_size = _meta(cache_root, "00001-TST")["cache_size_bytes"]
     entry = _meta(cache_root, "00001-TST")["files"][0]
     assert entry["status"] == "partial"
     assert entry["pages_done"] == 2
     assert entry["png_dir"].replace("\\", "/") == "dir1/report-png"
     assert collector.cached == 1
+    # Место освобождается после записи meta, по фактическому размеру папки
+    assert space == [prepared_size]
     png_dir = cache_root / "00001-TST" / "dir1" / "report-png"
 
     # Повторная подготовка валидного кеша не трогает partial (без purge) и не считается
@@ -270,17 +283,16 @@ def test_zip_pdf_partial_then_resume(tmp_path, cache_root, window, monkeypatch):
     # Без зрителя окно — первые K страниц, они готовы: докрутка ничего не делает
     _run(resume_pdf_conversion("00001-TST", "dir1/report-png"))
     assert _meta(cache_root, "00001-TST")["files"][0]["pages_done"] == 2
-
-    space = []
-    monkeypatch.setattr(prepare_service, "ensure_cache_space", space.append)
+    assert space == [prepared_size], "валидный кеш и холостая докрутка место не освобождают"
 
     # Смотрят 2-ю: впереди готова одна страница из N/2=2 — докрутка рендерит окно [2, 5]
     _watch(png_dir, want=2)
     _run(resume_pdf_conversion("00001-TST", "dir1/report-png"))
-    assert _meta(cache_root, "00001-TST")["files"][0]["pages_done"] == 5
+    meta = _meta(cache_root, "00001-TST")
+    assert meta["files"][0]["pages_done"] == 5
     assert _ready_pages(png_dir, "report") == {1, 2, 3, 4, 5}
-    # Место освобождается под окно (N из PAGES страниц), а не под весь PDF
-    assert space == [int(entry["size"] * CACHE_PDF_SIZE_MULTIPLIER * 4 / PAGES)]
+    # Место освобождается по размеру, записанному этой докруткой
+    assert space == [prepared_size, meta["cache_size_bytes"]]
     _assert_lock_released(cache_root, "00001-TST")
 
     # Смотрят 5-ю: 6-й нет — докрутка дорендеривает её, запись завершена
