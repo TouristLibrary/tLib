@@ -46,7 +46,7 @@ RATE_LIMIT_REQUESTS_PER_MINUTE = 300   # Лимит запросов
 RATE_LIMIT_CLEANUP_INTERVAL = 300       # Очистка (5 мин)
 ```
 
-**Исключения:** Статические файлы (`/data/*`, `/js/*`, `/css/*`, `/assets/*`)
+**Исключения:** Статические файлы (`/data/*`, `/cache/*`, `/js/*`, `/css/*`, `/assets/*`, `/data.db/*`) — на них API-лимит не действует. Лёгкая статика (`/js/`, `/css/`, `/cache/` — PNG-страницы PDF-вьюера) ограничена только жёстким лимитом `RATE_LIMIT_STATIC_HARD_THRESHOLD` (5000/мин); тяжёлая (`/data/`, `/assets/`, `/data.db/`) — дополнительно `MAX_CONCURRENT_STATIC_CONNECTIONS` (10 одновременных соединений). `/cache/` вынесен из API-лимита, чтобы загрузка страниц при пролистывании не отнимала лимит у heartbeat `/api/png/.../pages`.
 
 **При превышении:**
 ```http

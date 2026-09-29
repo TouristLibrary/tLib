@@ -1,13 +1,16 @@
-# Version 1.8 - 22.01.2026
+# Version 1.9 - 29.09.2026 16:49:58 GMT
 # Middleware для Rate Limiting
 # Описание: Ограничивает количество запросов с одного IP адреса для защиты от DoS атак и брутфорса.
 #           Отслеживает количество запросов с каждого IP адреса в окне времени, блокирует API запросы при превышении лимита
 #           (возвращает HTTP 429 Too Many Requests). Для статических файлов применяет два уровня защиты:
 #           1) Лимит одновременных соединений (MAX_CONCURRENT_STATIC_CONNECTIONS) - только для тяжелых файлов (PDF, архивы)
 #           2) Жёсткий лимит запросов в минуту (RATE_LIMIT_STATIC_HARD_THRESHOLD) - для всех статических файлов
-#           Легкие файлы (JS/CSS) исключены из concurrent limit для поддержки параллельной загрузки ES модулей.
+#           Легкие файлы (JS/CSS, PNG-страницы /cache/) исключены из concurrent limit для поддержки параллельной
+#           загрузки ES модулей и страниц PDF-вьюера.
 #           Это защищает от массовых скачиваний и злоупотребления трафиком, не мешая легитимным PDF Range-запросам.
 #           Автоматически очищает устаревшие записи для экономии памяти. Использует настройки из config.py.
+# Изменения v1.9: /cache/ — статика, а не API: PNG-страницы вьюера не расходуют API-лимит,
+#                 из которого живёт heartbeat /api/png/.../pages.
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -24,6 +27,7 @@ from config import (
     RATE_LIMIT_REQUESTS_PER_MINUTE,
     MAX_CONCURRENT_STATIC_CONNECTIONS,
     LOCAL_ARCHIVE_PATH,
+    CACHE_URL_PATH,
     STATIC_DIRS,
     FAVICON_URL_PATH,
     RETRY_AFTER_CONCURRENT_SECONDS,
@@ -38,9 +42,9 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     
     Для API endpoints: блокирует при превышении RATE_LIMIT_REQUESTS_PER_MINUTE.
     Для статических файлов применяет разделение на категории:
-        - Легкие (JS/CSS): только hard limit (5000 запросов/мин)
+        - Легкие (JS/CSS, PNG-страницы /cache/): только hard limit (5000 запросов/мин)
         - Тяжелые (PDF, архивы): hard limit + concurrent limit (10 одновременных соединений)
-    Это позволяет ES модулям загружаться параллельно при сохранении защиты от DDoS.
+    Это позволяет ES модулям и страницам PDF-вьюера загружаться параллельно при сохранении защиты от DDoS.
     """
     
     def __init__(self, app, requests_per_minute: int = None):
@@ -76,14 +80,16 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         
         # Пути, которые исключаются из rate limiting
         # (статические файлы для поддержки PDF Range запросов)
-        # Генерируется динамически из STATIC_DIRS в config.py
+        # Генерируется динамически из STATIC_DIRS в config.py.
+        # /cache/ — PNG-страницы PDF-вьюера: в API-корзине их загрузка при пролистывании
+        # отнимала бы лимит у heartbeat /pages, и конвертация вставала бы на паузу
         self.excluded_paths = (
-            [f'{LOCAL_ARCHIVE_PATH}/'] +
+            [f'{LOCAL_ARCHIVE_PATH}/', f'{CACHE_URL_PATH}/'] +
             [f'/{d}/' for d in STATIC_DIRS] +
             [FAVICON_URL_PATH]
         )
         
-        # Пути без ограничения concurrent (JS/CSS - маленькие, безопасны)
+        # Пути без ограничения concurrent (JS/CSS, PNG-страницы /cache/ — небольшие, грузятся пачками)
         # Для них применяется только hard limit, без concurrent limit
         self.light_static_paths = RATE_LIMIT_LIGHT_STATIC_PATHS
         
@@ -116,11 +122,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         is_static = any(request_path.startswith(excluded) for excluded in self.excluded_paths)
         
         if is_static:
-            # Проверяем, является ли это "легким" статическим файлом (JS/CSS)
+            # Проверяем, является ли это "легким" статическим файлом (JS/CSS, PNG-страницы)
             is_light_static = any(request_path.startswith(p) for p in self.light_static_paths)
-            
+
             # Проверка лимита одновременных соединений ТОЛЬКО для тяжелых файлов (PDF, архивы)
-            # JS/CSS пропускаем, так как они маленькие и загружаются параллельно браузером
+            # Легкие пропускаем, так как они маленькие и загружаются параллельно браузером
             if not is_light_static:
                 if self.active_connections[client_ip] >= self.max_concurrent_connections:
                     security_logger.log_invalid_request(

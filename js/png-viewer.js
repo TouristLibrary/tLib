@@ -1,6 +1,10 @@
-// Version 3.4 - 25.09.2026 - конвертация PDF, пока смотрят: /pages?want= (heartbeat + запрошенная
-//   страница), страницы появляются не по порядку — список собирается и опрашивается по имени файла
+// Version 3.5 - 29.09.2026 17:22:00 GMT
 // PNG Viewer - ESM модуль для просмотра PNG страниц
+// 3.5: PNG запрашивается только после появления в /pages (без 404 по заглушкам); повтор — до
+//   IMAGE_RETRY_MAX раз, только на экране, только для 429/сети; после исчерпания счётчик сбрасывается,
+//   возврат к странице даёт новый цикл
+// 3.4: конвертация PDF, пока смотрят: /pages?want= (heartbeat + запрошенная страница), страницы
+//   появляются не по порядку — список собирается и опрашивается по имени файла
 // 
 // АРХИТЕКТУРА:
 // - ESM модуль с экспортом класса PngViewer
@@ -41,6 +45,10 @@ const CONFIG = {
     
     // Rotation settings
     ROTATION_STEP: 90,                  // Шаг поворота в градусах
+
+    // Повтор загрузки PNG, который уже есть на диске (429/сбой сети)
+    IMAGE_RETRY_MAX: 3,                 // Повторов подряд; дальше — новый цикл при возврате к странице
+    IMAGE_RETRY_DELAY_MS: 3000,         // Пауза перед повтором (мс)
 };
 
 class PngViewer {
@@ -122,7 +130,7 @@ class PngViewer {
 
     /**
      * Собирает список страниц 0..total-1 по имени файла: запись с диска, если PNG уже готов,
-     * иначе заглушка с тем же URL (изображение подгрузится ретраями по мере готовности).
+     * иначе заглушка с тем же URL (изображение запросится, когда _pollNewPages увидит файл в /pages).
      * Страницы появляются не по порядку (первой рендерится запрошенная), поэтому подставлять
      * ответ сервера по позиции нельзя: при диске [1, 2, 71] третья заглушка получила бы страницу 71.
      * @param {string} dirPath
@@ -184,8 +192,6 @@ class PngViewer {
             this.loadedPages.clear();
             this.rotations.clear(); // Сбросить повороты при загрузке новой директории
             this.setZoom(CONFIG.DEFAULT_ZOOM); // Сбросить масштаб
-            // Сбросить счётчики retry для всех контейнеров
-            this.viewportInner.querySelectorAll('.page-container').forEach(c => { c._retryCount = 0; });
 
             // Если известно общее число страниц (конвертация идёт или стоит на паузе),
             // на месте недостающих страниц — заглушки. Вьюер сразу отрисует все контейнеры,
@@ -248,7 +254,8 @@ class PngViewer {
                 this.pages[i] = diskPage;
                 changed = true;
                 // Грузится или уже показана — не трогаем (повторная загрузка дала бы второй img).
-                // Ждёт ретрая после 404 — перепроверяем observer'ом, чтобы показать без backoff.
+                // Иначе заглушка ждала файла — перепроверяем observer'ом: он загрузит страницу,
+                // только если она в зоне viewport + PRELOAD_MARGIN.
                 const container = containers[i];
                 if (container && this.observer && !this.loadedPages.has(i)) {
                     this.observer.unobserve(container);
@@ -534,6 +541,17 @@ class PngViewer {
         const page = this.pages[pageIndex];
         if (!page) return;
 
+        // PNG ещё нет в /pages — не запрашиваем: 404 по каждой видимой заглушке съедал бы
+        // лимит запросов, и heartbeat /pages получал бы 429. Когда файл появится,
+        // _pollNewPages перепроверит контейнер observer'ом.
+        if (!this.diskPageNames.has(page.name)) {
+            const placeholder = container.querySelector('.page-placeholder');
+            if (placeholder) {
+                placeholder.textContent = `Страница ${pageIndex + 1} подготавливается...`;
+            }
+            return;
+        }
+
         // Mark as loading to prevent duplicate requests from IntersectionObserver
         this.loadedPages.add(pageIndex);
 
@@ -560,22 +578,32 @@ class PngViewer {
         };
 
         img.onerror = () => {
-            // Страница ещё не готова — показываем сообщение и повторяем попытку с backoff
-            const placeholder = container.querySelector('.page-placeholder');
-            if (placeholder) {
-                placeholder.textContent = `Страница ${pageIndex + 1} подготавливается...`;
-                placeholder.style.color = '';
-            }
-            // Снимаем метку "загружается" — позволяет retry сработать
+            // Файл есть на диске, значит сбой временный (429, сеть). Повторяем ограниченно
+            // и только для страницы на экране, чтобы пролистанные страницы не ретраили фоном.
+            // Снимаем метку "загружается" — уход и возврат к странице дадут новую попытку
             this.loadedPages.delete(pageIndex);
             const retryCount = (container._retryCount || 0) + 1;
             container._retryCount = retryCount;
-            const retryDelay = Math.min(3000 * Math.pow(1.5, retryCount - 1), 15000);
-            setTimeout(() => {
-                if (!this.loadedPages.has(pageIndex)) {
-                    this.loadPageImage(container, pageIndex);
+            const placeholder = container.querySelector('.page-placeholder');
+            if (retryCount > CONFIG.IMAGE_RETRY_MAX) {
+                if (placeholder) {
+                    placeholder.textContent = `Страница ${pageIndex + 1}: не удалось загрузить`;
                 }
-            }, retryDelay);
+                // Счётчик обнуляем: когда страница снова попадёт в зону viewport, observer
+                // запустит полный цикл попыток, а не одну без повтора
+                container._retryCount = 0;
+                return;
+            }
+            if (placeholder) {
+                placeholder.textContent = `Страница ${pageIndex + 1}: не удалось загрузить, повтор...`;
+            }
+            setTimeout(() => {
+                // observer загрузит страницу, только если она в зоне viewport + PRELOAD_MARGIN
+                if (this.observer && container.isConnected && !this.loadedPages.has(pageIndex)) {
+                    this.observer.unobserve(container);
+                    this.observer.observe(container);
+                }
+            }, CONFIG.IMAGE_RETRY_DELAY_MS);
         };
 
         img.src = page.url;
