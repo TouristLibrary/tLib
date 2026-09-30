@@ -98,7 +98,7 @@ convert_pdf_to_directory() (только недостающие страницы
   - **Место в кеше** освобождается после записи `_meta.json`, по фактическому размеру папки: `ensure_cache_space(cache_size_bytes)` держит «своя + чужие ≤ `MAX_CACHE_SIZE`». Заранее ничего не оценивается — оценка ошибалась в обе стороны и на каждой докрутке вытесняла бы чужие папки зря. `cache_size_bytes` не включает `_work/` с перераспакованным PDF, lock и `_prepare.json` — они удаляются при снятии lock.
 
   PDF из ZIP перераспаковывается в `_work/` одним файлом (`extract_single_member`). По завершении `status` и `pages_done` снимаются, в `app.log` — `PDF conversion resumed` (`rendered`/`done`/`total`/`completed`). При сбое докрутки директория закрывается на готовых страницах: запись получает `"status": "error"`, а `_pages_total.txt` и `pages` в meta — число готовых PNG (без PNG маркер удаляется). Директория перестаёт быть частичной: опрос вьюера не ставит холостую докрутку каждые 2 с, вьюер показывает готовые страницы и не ждёт недостающих; причина — в `app.log`.
-- **Наблюдаемость.** Каждый запуск конвертера (подготовка и докрутка) пишет одну INFO-строку `PDF conversion run` (`png_dir`, `rendered` — страниц за запуск, `done`, `total`, `completed`). Нагрузку меряет сумма `rendered` в час: полных конвертаций при рендере по окну почти нет, и их счётчик нагрузку больше не показывает.
+- **Наблюдаемость.** Каждый запуск конвертера (подготовка и докрутка) пишет одну INFO-строку `PDF conversion run` (`png_dir`, `rendered` — страниц за запуск, `done`, `total`, `completed`). Нагрузку меряет сумма `rendered` в час: полных конвертаций при рендере по окну почти нет, и их счётчик нагрузку больше не показывает. Ожидание читателя — INFO `PDF page wait` из `/pages` (`archive`, `png_dir`, `want`, `done`, `total`, `converting` — `converting_path` из `_prepare.json`, пусто, если конвертация архива не идёт): пишется на каждый опрос вьюера, пока PNG страницы `want` частичной директории нет на диске, то есть пока на экране «Страница N подготавливается…».
 - **Фронтенд.** Вьюер стартует только для видимого PDF (`autoLoad` в `pdfViewer.js`: PDF из `file` в hash, иначе активный или первый — deep-link на второй PDF запускает один вьюер), вьюеры остальных PDF отчёта — при первом выборе их ссылки (`selectLink`): каждый запущенный png-viewer держит heartbeat своей директории, и скрытые PDF одного ZIP не отнимают конвертер у видимого. `/prepare` отдаёт `pages` — полное число страниц — и для PDF на паузе: с `data-pages-total` вьюер открывается сразу, без жеста, рисует заглушки и показывает готовые страницы. PNG на диске появляются не по порядку, поэтому png-viewer строит список `0..total-1` по имени файла (заглушки на месте недостающих) и при опросе сопоставляет страницы по имени. Открытая вкладка с длинным PDF опрашивает `/pages`, пока на диске не все страницы, — это и есть heartbeat.
 - **«В кэш»** в админке — один инкремент на подготовку отчёта: архив распакован, треки и картинки сконвертированы, у каждого PDF готовы первые K страниц, записан `_meta.json` (PDF на паузе тоже считается). Докрутки не считаются — без двойного счёта. С 25.09.2026 до выкладки рендера по окну подготовки с PDF на паузе не учитывались, поэтому провал «В кэш» за эти сутки — артефакт счётчика.
 
@@ -232,6 +232,7 @@ Standalone PDF converted — pdf=09582, pages=150
 Cache prepared successfully — archive=12345-TST, partial=True   (partial: в архиве есть PDF на паузе)
 PDF conversion run — png_dir=.../data.cache/09582/09582-png, rendered=5, done=5, total=150, completed=False
 PDF conversion resumed — archive=09582, png_dir=09582-png, rendered=20, done=25, total=150, completed=False
+PDF page wait — archive=09582, png_dir=09582-png, want=40, done=25, total=150, converting=09582.pdf
 ```
 
 ### WARNING уровень
@@ -344,6 +345,7 @@ routers/cache_router.py             # /prepare и /resolve endpoints
 routers/png_viewer_router.py        # GET /api/png/{dir}/pages?want=N
 │   touch_watch() — heartbeat; partial и подготовка не идёт → resume_pdf_conversion
 │     (единственный триггер докрутки)
+│   INFO «PDF page wait» — страницы want нет на диске частичной директории (converting из _prepare.json)
 │
 js/modules/ui/results/single.js     # handleSingleResult:
 │   checkFileAvailable() вызывается для всех типов (ZIP и standalone PDF)

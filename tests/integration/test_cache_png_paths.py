@@ -1,4 +1,4 @@
-# Version 1.8 - 26.09.2026 10:00:00 GMT
+# Version 1.9 - 30.09.2026 15:29:26 GMT
 # Тесты безопасности путей cache_router и png_viewer_router (этап 4)
 # Описание: Проверяет, что traverse-векторы в archive_name, body.path и dir_path
 #           корректно отклоняются (400), а легитимные пути работают (не 400/500).
@@ -16,10 +16,12 @@
 # 1.7: /prepare при валидном кеше больше не докручивает PDF на паузе — триггер докрутки
 #      только /pages (spy resume_pdf_conversion — только в png_viewer_router).
 # 1.8: /prepare?probe=1 отдаёт pages и для PDF на паузе — вьюер открывается без жеста.
+# 1.9: /pages пишет «PDF page wait», только пока страницы want нет на диске.
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -414,6 +416,29 @@ class TestConvertWhileWatching:
         resp = app_client.get("/api/png/00001-TST/dir1/report-png/pages")
         assert resp.status_code == 200, resp.text
         assert resume_calls == []
+
+    def test_pages_logs_page_wait_while_want_missing(self, app_client, tmp_dirs, resume_calls, caplog):
+        """«PDF page wait» — читатель видит заглушку want; converting — PDF, который рендерится сейчас.
+        Страница готова — строки нет."""
+        png_dir = _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
+        prepare = {"status": "preparing", "stage": "converting", "converting_path": "dir1/other.pdf",
+                   "updated_at": datetime.now(timezone.utc).isoformat()}
+        (tmp_dirs["cache"] / "00001-TST" / "_prepare.json").write_text(json.dumps(prepare), encoding="utf-8")
+        caplog.set_level(logging.INFO, logger="tlibwebapp")
+
+        def waits():
+            return [r.extra_data for r in caplog.records if r.getMessage() == "PDF page wait"]
+
+        resp = app_client.get("/api/png/00001-TST/dir1/report-png/pages?want=2")
+        assert resp.status_code == 200, resp.text
+        assert waits() == [{"archive": "00001-TST", "png_dir": "dir1/report-png", "want": 2,
+                            "done": 1, "total": 3, "converting": "dir1/other.pdf"}]
+
+        caplog.clear()
+        (png_dir / "report_0002.png").write_bytes(b"\x89PNG")
+        resp = app_client.get("/api/png/00001-TST/dir1/report-png/pages?want=2")
+        assert resp.status_code == 200, resp.text
+        assert waits() == []
 
     def test_probe_returns_pages_of_partial_pdf(self, app_client, tmp_dirs):
         """PDF на паузе отдаётся с полным числом страниц: вьюер открывается сразу, без жеста,

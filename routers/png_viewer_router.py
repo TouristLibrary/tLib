@@ -1,8 +1,10 @@
-# Version 2.5 - 26.09.2026 09:00:00 GMT
+# Version 2.6 - 30.09.2026 15:29:26 GMT
 # PNG Viewer Router для TlibWebApp
 # Описание: API endpoints для PNG viewer. Предоставляет листинг PNG директорий в data.cache
 #           и списки PNG файлов для просмотра. Используется embedded-вьюером /png-viewer.
 #           Логика resolve переехала в единый cache_router POST /resolve.
+# 2.6: INFO «PDF page wait» — страницы want нет на диске частичной директории, читатель видит заглушку;
+#      converting (PDF, который сейчас рендерится) показывает причину ожидания.
 # 2.5: рендер PDF по окну просмотра — /pages единственный триггер докрутки; решение «докручивать ли»
 #      (гистерезис по окну) — в resume_pdf_conversion, которая больше не учитывает «В кэш».
 # 2.4: имя архива и путь директории для heartbeat/докрутки берутся из проверенного full_path.
@@ -15,6 +17,7 @@
 #      _list_png_files использует .resolve() базы для корректного relative_to.
 
 import json
+import logging
 from pathlib import Path
 from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Request
@@ -25,7 +28,8 @@ from config import CACHE_DIRECTORY, CACHE_URL_PATH, CACHE_META_FILENAME
 
 # Импорт сервисов кеша: heartbeat просмотра и докрутка частичной конвертации
 from services.cache.cache_watch import touch_watch, read_pages_total, is_partial
-from services.cache.cache_prepare_service import is_preparing, resume_pdf_conversion
+from services.cache.cache_prepare_service import is_preparing, read_prepare_status, resume_pdf_conversion
+from services.cache.cache_service import generate_png_filename
 
 # Импорт канонического валидатора путей
 from services.security.path_validation import (
@@ -34,7 +38,7 @@ from services.security.path_validation import (
 )
 
 # Импорт логгеров
-from logging_config import app_logger
+from logging_config import app_logger, log_with_data
 
 # Создаем роутер
 router = APIRouter(prefix="/api/png", tags=["png-viewer"])
@@ -244,7 +248,8 @@ async def get_pages(
 
         # Heartbeat просмотра: конвертер PDF работает, пока директорию смотрят; заодно LRU-метка архива
         touch_watch(full_path, want if want is not None and want >= 1 else None, cache_root / archive_name)
-        if is_partial(full_path) and not is_preparing(archive_name):
+        partial = is_partial(full_path)
+        if partial and not is_preparing(archive_name):
             background_tasks.add_task(resume_pdf_conversion, archive_name, png_dir_rel)
 
         # Получаем список файлов (full_path resolved → _list_png_files использует resolved базу)
@@ -252,6 +257,16 @@ async def get_pages(
 
         # Маркер общего числа страниц (записывается pre-scan'ом)
         pages_total = read_pages_total(full_path)
+
+        # Читатель ждёт: вьюер показывает «Страница N подготавливается…». converting — PDF архива,
+        # который рендерится сейчас: этот же — ждём рендер, другой — конкуренция PDF одного архива,
+        # пусто — докрутка не идёт. _prepare.json читается, только пока страницы нет
+        if partial and pages_total and want is not None and 1 <= want <= pages_total:
+            pdf_stem = full_path.name.removesuffix('-png')
+            if not (full_path / generate_png_filename(pdf_stem, want - 1)).exists():
+                log_with_data(logging.INFO, "PDF page wait", archive=archive_name, png_dir=png_dir_rel,
+                              want=want, done=len(pages), total=pages_total,
+                              converting=read_prepare_status(archive_name).get("converting_path", ""))
 
         app_logger.debug(f"PNG pages listing: {dir_path} - {len(pages)} pages")
 
