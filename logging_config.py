@@ -1,4 +1,4 @@
-# Version 1.8 - 20.09.2026 09:05:00 GMT
+# Version 1.9 - 30.09.2026 15:26:30 GMT
 # Unified Logging System для TlibWebApp
 # Описание: Центральная система логирования с гибридным форматом, читаемым человеком и ИИ. Формат логов:
 #           [timestamp] LEVEL [req_id] function:line | key=value msg="quoted text".
@@ -7,13 +7,17 @@
 #           log_with_data() (логирование со структурированными данными), log_security_event() (события безопасности),
 #           SecurityLogger (класс для удобного логирования событий безопасности),
 #           parse_logfmt_fields() (парсер logfmt-строк; единая точка для admin_router и alerts/digest).
-#           Файлы логов: logs/app.log (INFO+), logs/debug.log (DEBUG+), logs/critical.log (WARNING+).
+#           Файлы логов: logs/app.log (только INFO), logs/debug.log (DEBUG+), logs/critical.log (WARNING+);
+#           WARNING и выше в app.log не попадают — только в critical.log.
 #           Использует константы из config.py для размеров файлов и счетчиков.
 # Изменения v1.6: добавлен SecurityLogger.log_email_quota_exceeded — корректная метка
 #                 event_type=EMAIL_QUOTA для исчерпания дневного лимита request-link.
 # Изменения v1.7: уточнён docstring log_email_quota_exceeded (убрана неточность про дайджест).
 # Изменения v1.8: добавлен SecurityLogger.log_admin_ip_change — админ-сессия из другой подсети
 #                 (event_type=ADMIN_IP_CHANGE, threat_level=LOW); сессия при этом не сбрасывается.
+# Изменения v1.9: log_rate_limit_exceeded принимает endpoint — путь запроса, на котором сработал лимит
+#                 (heartbeat /pages, PNG /cache/, поиск); без него 429 не отличить по причине.
+#                 В шапке уточнено: app.log содержит только INFO (фильтр app_handler), не «INFO+».
 
 import os
 import re
@@ -317,17 +321,21 @@ class SecurityLogger:
             threat_level="HIGH"
         )
     
-    def log_rate_limit_exceeded(self, ip: str):
+    def log_rate_limit_exceeded(self, ip: str, endpoint: str = None):
         """
         Логирует превышение rate limit (слишком много запросов)
-        
+
         Args:
             ip: IP адрес клиента
+            endpoint: Путь запроса, на котором сработал лимит, — показывает, кого режет лимит
+                      (heartbeat /pages, PNG /cache/, поиск). Ключ endpoint= тот же, что у INVALID_REQUEST
         """
+        details = {"endpoint": endpoint} if endpoint else {}
         log_security_event(
             "RATE_LIMIT_EXCEEDED",
             ip=ip,
-            threat_level="MEDIUM"
+            threat_level="MEDIUM",
+            **details
         )
     
     def log_invalid_request(self, ip: str, endpoint: str, reason: str):

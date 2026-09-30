@@ -1,4 +1,4 @@
-# Version 1.9 - 29.09.2026 16:49:58 GMT
+# Version 1.10 - 30.09.2026 15:26:30 GMT
 # Middleware для Rate Limiting
 # Описание: Ограничивает количество запросов с одного IP адреса для защиты от DoS атак и брутфорса.
 #           Отслеживает количество запросов с каждого IP адреса в окне времени, блокирует API запросы при превышении лимита
@@ -11,6 +11,8 @@
 #           Автоматически очищает устаревшие записи для экономии памяти. Использует настройки из config.py.
 # Изменения v1.9: /cache/ — статика, а не API: PNG-страницы вьюера не расходуют API-лимит,
 #                 из которого живёт heartbeat /api/png/.../pages.
+# Изменения v1.10: RATE_LIMIT_EXCEEDED пишет путь запроса (endpoint) — видно, кого режет лимит:
+#                  heartbeat /pages, PNG /cache/ или поиск.
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -166,7 +168,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                     
                     # Жёсткий лимит - блокируем при превышении
                     if new_count > self.static_hard_threshold:
-                        security_logger.log_rate_limit_exceeded(client_ip)
+                        security_logger.log_rate_limit_exceeded(client_ip, request_path)
                         return JSONResponse(
                             {"error": "Too many requests to static files. Please try again later."},
                             status_code=429,
@@ -191,7 +193,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             # Проверяем, не превышен ли лимит
             if count >= self.requests_per_minute:
                 # Лимит превышен - логируем и возвращаем ошибку 429 Too Many Requests
-                security_logger.log_rate_limit_exceeded(client_ip)
+                security_logger.log_rate_limit_exceeded(client_ip, request_path)
                 return JSONResponse(
                     {"error": "Too many requests. Please try again later."},
                     status_code=429,

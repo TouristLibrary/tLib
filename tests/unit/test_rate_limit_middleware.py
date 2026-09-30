@@ -1,15 +1,17 @@
-# Version 1.0 - 29.09.2026 16:49:58 GMT
+# Version 1.1 - 30.09.2026 15:27:03 GMT
 # Unit tests for middlewares/rate_limit.py
 # Описание: Проверяет, что PNG-страницы PDF-вьюера (/cache/) — лёгкая статика: не расходуют
 #           API-лимит, из которого живёт heartbeat /api/png/.../pages, и не занимают слоты
 #           concurrent-лимита. RateLimitMiddleware оборачивает тривиальное ASGI-приложение,
 #           которое в момент запроса снимает active_connections — так виден счётчик «в полёте».
+# Изменения v1.1: RATE_LIMIT_EXCEEDED получает путь запроса (endpoint).
 
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
 from starlette.responses import PlainTextResponse
 
+import middlewares.rate_limit as rate_limit_module
 from middlewares.rate_limit import RateLimitMiddleware
 
 # IP, с которым ходит TestClient
@@ -64,3 +66,21 @@ class TestCacheIsLightStatic:
 
         assert seen == [0, 1]
         assert mw.active_connections.get(CLIENT_IP, 0) == 0
+
+
+class TestRateLimitLogsEndpoint:
+    def test_api_429_logs_request_path(self, monkeypatch):
+        # По endpoint видно, кого режет лимит: heartbeat /pages, PNG /cache/ или поиск
+        calls = []
+        monkeypatch.setattr(
+            rate_limit_module.security_logger, "log_rate_limit_exceeded",
+            lambda ip, endpoint=None: calls.append((ip, endpoint)),
+        )
+        mw, _ = _build()
+        client = TestClient(mw)
+        path = "/api/png/09582/09582-png/pages"
+
+        for _ in range(API_LIMIT + 1):
+            client.get(path)
+
+        assert calls == [(CLIENT_IP, path)]

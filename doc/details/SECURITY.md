@@ -48,6 +48,10 @@ RATE_LIMIT_CLEANUP_INTERVAL = 300       # Очистка (5 мин)
 
 **Исключения:** Статические файлы (`/data/*`, `/cache/*`, `/js/*`, `/css/*`, `/assets/*`, `/data.db/*`) — на них API-лимит не действует. Лёгкая статика (`/js/`, `/css/`, `/cache/` — PNG-страницы PDF-вьюера) ограничена только жёстким лимитом `RATE_LIMIT_STATIC_HARD_THRESHOLD` (5000/мин); тяжёлая (`/data/`, `/assets/`, `/data.db/`) — дополнительно `MAX_CONCURRENT_STATIC_CONNECTIONS` (10 одновременных соединений). `/cache/` вынесен из API-лимита, чтобы загрузка страниц при пролистывании не отнимала лимит у heartbeat `/api/png/.../pages`.
 
+**Счётчик статики и логи.** У статики один счётчик на IP в минуту: `/cache/` считается вместе с `/data/`, `/js/`, `/css/`, `/assets/`, `/data.db/`, поэтому PNG-страницы вьюера делят порог 5000 с модулями и архивами. В `critical.log`:
+- на 1000-м запросе статики за минуту (`RATE_LIMIT_STATIC_WARNING_THRESHOLD`) — одно событие `INVALID_REQUEST` с `ip` и `endpoint` — путём запроса, на котором счётчик дошёл до порога: это отметка момента, а не источник нагрузки;
+- на каждый отклонённый запрос — сверх 5000 статики или сверх `RATE_LIMIT_REQUESTS_PER_MINUTE` для API — `RATE_LIMIT_EXCEEDED` с `ip` и `endpoint` — путём отклонённого запроса. По `endpoint` видно, кого режет лимит: heartbeat `/api/png/.../pages`, PNG `/cache/` или поиск.
+
 **При превышении:**
 ```http
 HTTP/1.1 429 Too Many Requests
