@@ -52,6 +52,8 @@ RATE_LIMIT_CLEANUP_INTERVAL = 300       # Очистка (5 мин)
 - на 1000-м запросе статики за минуту (`RATE_LIMIT_STATIC_WARNING_THRESHOLD`) — одно событие `INVALID_REQUEST` с `ip` и `endpoint` — путём запроса, на котором счётчик дошёл до порога: это отметка момента, а не источник нагрузки;
 - на каждый отклонённый запрос — сверх 5000 статики или сверх `RATE_LIMIT_REQUESTS_PER_MINUTE` для API — `RATE_LIMIT_EXCEEDED` с `ip` и `endpoint` — путём отклонённого запроса. По `endpoint` видно, кого режет лимит: heartbeat `/api/png/.../pages`, PNG `/cache/` или поиск.
 
+Как по этим событиям найти причину заглушек в PDF-вьюере — [PDF_TO_PNG.md, «Читатель видит заглушки»](../PDF_TO_PNG.md#читатель-видит-заглушки-что-смотреть-в-логах).
+
 **При превышении:**
 ```http
 HTTP/1.1 429 Too Many Requests
