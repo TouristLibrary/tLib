@@ -1,4 +1,6 @@
-// Version 1.3 - 24.09.2026 - png-viewer для неготового кэша активируется после жеста пользователя
+// Version 1.4 - 30.09.2026 - png-viewer стартует только для видимого PDF (autoLoad; при deep-link — PDF
+//   из file в hash), скрытые — при выборе ссылки (selectLink): каждый запущенный вьюер опрашивает /pages
+//   и держит heartbeat своего PDF
 // Описание: Viewer-стратегия для PDF (PNG viewer). Реализует контракт viewer-стратегии:
 //   buildFileListHtml, buildViewersHtml, setupHandlers, selectLink, autoLoad,
 //   applyHashState, getHashStateOnTabSwitch.
@@ -134,19 +136,6 @@ async function resolvePdfViewer(container, pdfName) {
 }
 
 /**
- * Инициализирует все PNG viewer'ы на вкладке PDF.
- * Запускает resolve для всех PDF параллельно.
- */
-async function initPdfTab() {
-    const allPdfContainers = document.querySelectorAll('.viewer-container[data-pdf-name]');
-    await Promise.all(
-        Array.from(allPdfContainers).map(container =>
-            resolvePdfViewer(container, container.dataset.pdfName)
-        )
-    );
-}
-
-/**
  * Устанавливает одноразовый обработчик load для фокуса на viewer.
  * @param {HTMLIFrameElement} viewerIframe
  */
@@ -266,7 +255,7 @@ export function selectLink(linkEl, options = {}) {
         linkSelector: '.tab-link[data-pdf-url]',
     });
     if (!ctx) return;
-    const { name, viewer: pngViewer, multi } = ctx;
+    const { name, targetContainer, viewer: pngViewer, multi } = ctx;
 
     // Определяем номер страницы для навигации
     let p;
@@ -280,6 +269,14 @@ export function selectLink(linkEl, options = {}) {
     replaceUrlHash({ tab: TAB_TOKENS.PDF, file, p });
 
     const isIframeLoaded = pngViewer.src && pngViewer.src !== '' && pngViewer.src !== 'about:blank';
+
+    // autoLoad стартует только видимый PDF — вьюер остальных стартует при первом выборе ссылки.
+    // Страница p уже в hash: resolvePdfViewer откроет вьюер сразу на ней.
+    if (!isIframeLoaded) {
+        resolvePdfViewer(targetContainer, name).catch(err => {
+            console.error('resolvePdfViewer failed:', err);
+        });
+    }
 
     if (isIframeLoaded && typeof p === 'number' && p >= 1) {
         setPngViewerPage(pngViewer, p);
@@ -300,27 +297,36 @@ export function selectLink(linkEl, options = {}) {
 }
 
 /**
- * Автоматически загружает первый PDF при активации таба PDF.
+ * Автоматически загружает PDF при активации таба PDF: из file в hash, иначе активный или первый.
+ * Стартует только видимый вьюер: запущенный png-viewer опрашивает /pages (heartbeat), и скрытый
+ * PDF того же архива конкурировал бы с видимым за конвертер. Остальные стартует selectLink.
  * @param {HTMLElement} tabContent
  */
 export function autoLoad(tabContent) {
     if (!tabContent) return;
 
-    initPdfTab().catch(err => {
-        console.error('initPdfTab failed:', err);
-    });
+    // Deep-link #tab=pdf&file=B стартует сразу B: иначе стартовал бы активный A, а applyHashState
+    // следом запустил бы второй вьюер. Без file или с именем не из PDF — активная ссылка, иначе первая
+    const pdfLinks = tabContent.querySelectorAll('.tab-link[data-pdf-url]');
+    const targetLink = findLinkByDataset(
+        pdfLinks, 'pdfName', parseViewStateFromHash().file || '', tabContent, '.tab-link[data-pdf-url].active'
+    );
+    if (targetLink) {
+        setActiveLink(pdfLinks, targetLink);
 
-    const firstLink = tabContent.querySelector('.tab-link[data-pdf-url].active')
-                   || tabContent.querySelector('.tab-link[data-pdf-url]');
-    if (firstLink) {
-        const pdfLinks = tabContent.querySelectorAll('.tab-link[data-pdf-url]');
-        setActiveLink(pdfLinks, firstLink);
-
-        const pdfName = firstLink.dataset?.pdfName || '';
+        const pdfName = targetLink.dataset?.pdfName || '';
         if (pdfName) {
+            let visibleContainer = null;
             tabContent.querySelectorAll('.viewer-container[data-pdf-name]').forEach(container => {
-                container.style.display = container.dataset.pdfName === pdfName ? '' : 'none';
+                const isVisible = container.dataset.pdfName === pdfName;
+                container.style.display = isVisible ? '' : 'none';
+                if (isVisible) visibleContainer = container;
             });
+            if (visibleContainer) {
+                resolvePdfViewer(visibleContainer, pdfName).catch(err => {
+                    console.error('resolvePdfViewer failed:', err);
+                });
+            }
         }
     }
 }
