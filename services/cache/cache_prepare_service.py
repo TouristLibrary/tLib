@@ -1,4 +1,4 @@
-# Version 2.4 - 26.09.2026 12:21:58 GMT
+# Version 2.5 - 30.09.2026 16:10:58 GMT
 # Cache Prepare Service для TlibWebApp
 # Описание: Централизованный сервис подготовки кеша архивов.
 #           Единственный владелец _prepare.json и lock-логики.
@@ -18,9 +18,14 @@
 # 2.4: место в кеше освобождается не по оценке «источник × множитель» до работы, а в конце
 #      запуска — ensure_cache_space(cache_size_bytes) после записи _meta.json, по факту.
 #      В подготовке — после лога и счётчика «В кэш»: сбой обхода не маскирует готовый кеш.
+# 2.5: _acquire_lock снимает осиротевший lock — lockdir без _prepare.json старше
+#      CACHE_STALE_LOCK_TIMEOUT_MINUTES (рестарт между захватом lock и записью статуса или между
+#      удалением статуса и снятием lock) — и захватывает заново; WARNING «Orphaned cache lock removed».
+#      Lock, снятый владельцем между попыткой захвата и проверкой возраста, берётся сразу без WARNING.
 
 import os
 import json
+import time
 import shutil
 import logging
 from pathlib import Path
@@ -73,32 +78,61 @@ from .cache_pipeline import (
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================================
 
+def _make_lock_dir(lock_dir: Path) -> bool:
+    """
+    Создаёт lockdir через mkdir (atomic на всех ОС) и пишет pid+time в info.txt для отладки.
+
+    Returns:
+        True если lockdir создан, False если уже существует
+    """
+    try:
+        lock_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        return False
+    (lock_dir / "info.txt").write_text(
+        f"pid: {os.getpid()}\n"
+        f"timestamp: {datetime.now(timezone.utc).isoformat()}\n",
+        encoding="utf-8"
+    )
+    return True
+
+
 def _acquire_lock(archive_name: str) -> bool:
     """
-    Захватывает lock через mkdir (atomic на всех ОС).
-    Записывает pid+time в info.txt для отладки.
-    
+    Захватывает lock подготовки архива (_make_lock_dir).
+    Осиротевший lock — lockdir без _prepare.json старше CACHE_STALE_LOCK_TIMEOUT_MINUTES —
+    снимается, и захват повторяется один раз.
+
     Args:
         archive_name: имя архива
-        
+
     Returns:
         True если lock успешно захвачен, False если уже занят
     """
     cache_dir = get_cache_dir(archive_name)
     lock_dir = cache_dir / CACHE_LOCK_DIRNAME
-    
+
     try:
-        lock_dir.mkdir(parents=True, exist_ok=False)
-        # Записываем информацию для отладки
-        info_file = lock_dir / "info.txt"
-        info_file.write_text(
-            f"pid: {os.getpid()}\n"
-            f"timestamp: {datetime.now(timezone.utc).isoformat()}\n",
-            encoding="utf-8"
-        )
-        return True
-    except FileExistsError:
-        return False
+        if _make_lock_dir(lock_dir):
+            return True
+        # Живая подготовка пишет _prepare.json сразу после захвата lock, поэтому lock без него
+        # старше таймаута — сирота процесса, прерванного рестартом между захватом и записью статуса
+        # или между удалением статуса и снятием lock. _cleanup_stale вызывают только при stale
+        # _prepare.json — без этой проверки такой lock вечно блокировал бы подготовку и докрутку
+        if read_prepare_status(archive_name)["status"] != CACHE_STATUS_NONE:
+            return False
+        try:
+            age = time.time() - lock_dir.stat().st_mtime
+        except FileNotFoundError:
+            # Владелец снял lock между попыткой захвата и проверкой возраста — берём сразу,
+            # без лишнего WARNING «Failed to acquire lock» в critical.log
+            return _make_lock_dir(lock_dir)
+        if age <= CACHE_STALE_LOCK_TIMEOUT_MINUTES * 60:
+            return False
+        _cleanup_stale(archive_name)
+        log_with_data(logging.WARNING, "Orphaned cache lock removed",
+                      archive=archive_name, age_seconds=int(age))
+        return _make_lock_dir(lock_dir)
     except Exception as e:
         app_logger.warning(f"Failed to acquire lock for {archive_name}: {e}")
         return False
