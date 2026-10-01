@@ -1,4 +1,7 @@
-// Version 3.5 - 26.07.2026
+// Version 3.6 - 01.10.2026 16:26:49 GMT
+// Изменения v3.6: гонка next-code — поздний ответ loadDefaultCode() игнорируется вне режима 'new';
+//                 applyAuthenticatedState() заполняет «Загрузил» до await, а не после
+//                 (иначе открытый из очереди отчёт получал шифр next-code и админа как загрузившего).
 // Изменения v3.5: удалено поле ИмяФайла — имя архива строится из ID и archive_ext.
 // Логика страницы загрузки отчётов (upload.html)
 // Единая форма, три режима: 'new' (загрузка), 'edit' (модерация 10_up), 'edit_published' (правка опубликованного).
@@ -566,6 +569,8 @@ async function loadDefaultCode() {
     const res = await fetch('/api/upload/next-code');
     if (!res.ok) return;
     const d = await res.json();
+    // Пока ждали ответ, админ мог открыть отчёт (edit/edit_published) — не затирать его шифр
+    if (formMode !== 'new') return;
     $('f-shifr').value    = d.shifr;
     $('f-dopshifr').value = d.dopshifr || 'TLIB';
     codeOk = true;
@@ -1754,11 +1759,12 @@ async function doRejectDelete(id) {
 // Вызывается как при первоначальной загрузке, так и при повторной проверке при возврате на вкладку.
 async function applyAuthenticatedState() {
   renderAuthState(currentUser);
-  await loadDefaultCode();
+  // «Загрузил» заполняем до await: после ответа next-code форма может быть уже в режиме edit
   $('f-zagruzil').value = currentUser.name || '';
   if (isAdminUser()) {
     showUploaderInfo(currentUser.id ?? null, currentUser.name || '', currentUser.email || '');
   }
+  await loadDefaultCode();
   updateActionBtns();
 }
 
