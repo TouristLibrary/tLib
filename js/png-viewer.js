@@ -1,5 +1,9 @@
-// Version 3.5 - 29.09.2026 17:22:00 GMT
+// Version 3.6 - 01.10.2026 15:01:09 GMT
 // PNG Viewer - ESM модуль для просмотра PNG страниц
+// 3.6: единый планировщик опроса /pages (_schedulePoll): один таймер, один запрос в полёте.
+//   Текущей страницы нет на диске — опрос раз в PAGES_POLL_WAITING_MS, иначе раз в PAGES_POLL_IDLE_MS;
+//   переход или скролл на неготовую страницу — опрос сразу (не чаще PAGES_POLL_MIN_GAP_MS), чтобы
+//   сервер узнал новый want, не дожидаясь планового тика
 // 3.5: PNG запрашивается только после появления в /pages (без 404 по заглушкам); повтор — до
 //   IMAGE_RETRY_MAX раз, только на экране, только для 429/сети; после исчерпания счётчик сбрасывается,
 //   возврат к странице даёт новый цикл
@@ -19,7 +23,8 @@
 // API ENDPOINTS (настраиваются через options.apiBase):
 // - GET {apiBase}/{path}/pages?want=N - список страниц в директории. Запрос — heartbeat
 //   просмотра: сервер конвертирует PDF, только пока вьюер опрашивает /pages, и первой
-//   рендерит страницу want (1-based), которую сейчас показывает вьюер
+//   рендерит страницу want (1-based), которую сейчас показывает вьюер, затем окно впереди
+//   и страницы позади неё
 //
 // СВЯЗЬ С PDF_TO_PNG_SERVICE:
 // - PNG директории создаются автоматически при кешировании PDF
@@ -49,6 +54,12 @@ const CONFIG = {
     // Повтор загрузки PNG, который уже есть на диске (429/сбой сети)
     IMAGE_RETRY_MAX: 3,                 // Повторов подряд; дальше — новый цикл при возврате к странице
     IMAGE_RETRY_DELAY_MS: 3000,         // Пауза перед повтором (мс)
+
+    // Опрос /pages, пока на диске не все PNG. Лимит API — 300 запросов в минуту на IP, за NAT
+    // его делят несколько читателей, а 429 на /pages гасит heartbeat — поэтому не чаще.
+    PAGES_POLL_WAITING_MS: 1000,        // Текущей страницы нет на диске — читатель ждёт её (мс)
+    PAGES_POLL_IDLE_MS: 2000,           // Текущая страница готова; также после сбоя запроса (мс)
+    PAGES_POLL_MIN_GAP_MS: 500,         // Между запросами: листание по неготовым страницам (мс)
 };
 
 class PngViewer {
@@ -73,6 +84,11 @@ class PngViewer {
         this.rotations = new Map(); // Map<pageIndex, degrees>
         this.userInteracted = false; // true после первого явного действия пользователя
         this.diskPageNames = new Set(); // Имена PNG, уже найденных на диске (опрос во время конвертации)
+        this.pollTimer = null;          // Единственный таймер опроса /pages (_schedulePoll)
+        this.pollInFlight = false;      // Запрос /pages в полёте — второй параллельно не шлём
+        this.pollAgain = false;         // Страница сменилась во время запроса — опросить сразу после ответа
+        this.lastPagesAt = 0;           // Время последнего запроса /pages (мс)
+        this.lastPagesWant = null;      // want последнего запроса /pages — сервер его уже знает
 
         // ИНТЕГРАЦИЯ: Привязываем DOM элементы (может быть из container)
         this._bindDomElements();
@@ -156,7 +172,10 @@ class PngViewer {
         const MAX_RETRIES = 15;
         const RETRY_DELAY_MS = 2000;
         try {
-            const response = await fetch(this._pagesUrl(dirPath, (this.options.initialPage || 0) + 1));
+            const want = (this.options.initialPage || 0) + 1;
+            this.lastPagesAt = Date.now();
+            this.lastPagesWant = want;
+            const response = await fetch(this._pagesUrl(dirPath, want));
 
             if (!response.ok) {
                 if (retryCount < MAX_RETRIES) {
@@ -206,9 +225,8 @@ class PngViewer {
                 // Пока на диске не все страницы — опрашиваем /pages: подтягиваем новые PNG
                 // без перезагрузки вьюера и держим heartbeat, без которого сервер ставит
                 // конвертацию на паузу.
-                const knownTotal = this.options.pagesTotal;
-                if (knownTotal && diskPages.length < knownTotal) {
-                    setTimeout(() => this._pollNewPages(dirPath), RETRY_DELAY_MS);
+                if (this._isPolling()) {
+                    this._schedulePoll(this._pollDelay());
                 }
             } else {
                 this.showEmptyState('Нет PNG файлов в директории');
@@ -220,26 +238,75 @@ class PngViewer {
         }
     }
 
+    /** Опрос /pages нужен: число страниц известно, и на диске ещё не все. */
+    _isPolling() {
+        const knownTotal = this.options.pagesTotal;
+        return Boolean(knownTotal) && this.diskPageNames.size < knownTotal;
+    }
+
+    /**
+     * Пауза до следующего опроса: текущей страницы нет на диске — читатель её ждёт, опрос чаще.
+     * @returns {number}
+     */
+    _pollDelay() {
+        const page = this.pages[this.currentPage];
+        return page && !this.diskPageNames.has(page.name)
+            ? CONFIG.PAGES_POLL_WAITING_MS
+            : CONFIG.PAGES_POLL_IDLE_MS;
+    }
+
+    /**
+     * Единственное место, где планируется опрос /pages: прежний таймер сбрасывается, поэтому
+     * мгновенный опрос при смене страницы не порождает вторую цепочку опросов.
+     * Не раньше PAGES_POLL_MIN_GAP_MS после предыдущего запроса.
+     * @param {number} delayMs
+     */
+    _schedulePoll(delayMs) {
+        clearTimeout(this.pollTimer);
+        const gapMs = this.lastPagesAt + CONFIG.PAGES_POLL_MIN_GAP_MS - Date.now();
+        this.pollTimer = setTimeout(() => {
+            this.pollTimer = null;
+            this._pollNewPages();
+        }, Math.max(delayMs, gapMs, 0));
+    }
+
+    /**
+     * Смена текущей страницы (скролл или переход). Страницы нет на диске — сервер узнаёт новый want
+     * сразу, а не на следующем плановом опросе: иначе ожидание складывалось бы из двух опросов.
+     */
+    _onCurrentPageChanged() {
+        const page = this.pages[this.currentPage];
+        if (!this._isPolling() || !page || this.diskPageNames.has(page.name)) return;
+        if (this.currentPage + 1 === this.lastPagesWant) return;
+        if (this.pollInFlight) {
+            // Ответ придёт со старым want — следующий опрос сразу после него
+            this.pollAgain = true;
+        } else {
+            this._schedulePoll(0);
+        }
+    }
+
     /**
      * Лёгкий polling страниц, пока на диске не все PNG.
      * Каждый запрос — heartbeat просмотра: без него сервер через 20 с ставит конвертацию
      * на паузу, а want направляет её к странице, которую сейчас смотрят.
      * Не сбрасывает zoom/rotations/scroll — только подтягивает появившиеся PNG.
      * Страницы появляются не по порядку, поэтому новые определяются по имени файла.
-     * @param {string} dirPath
+     * Следующий опрос планирует сам через _schedulePoll.
      */
-    async _pollNewPages(dirPath) {
-        const RETRY_DELAY_MS = 2000;
+    async _pollNewPages() {
         const knownTotal = this.options.pagesTotal;
         if (!knownTotal) return;
-        const scheduleNext = () => setTimeout(() => this._pollNewPages(dirPath), RETRY_DELAY_MS);
 
+        this.pollInFlight = true;
+        this.pollAgain = false;
+        this.lastPagesAt = Date.now();
+        this.lastPagesWant = this.currentPage + 1;
+        // Сбой (429, рестарт сервера) — повтор в прежнем темпе, без учащения; null — опрос окончен
+        let nextDelay = CONFIG.PAGES_POLL_IDLE_MS;
         try {
-            const response = await fetch(this._pagesUrl(dirPath, this.currentPage + 1));
-            if (!response.ok) {
-                scheduleNext();
-                return;
-            }
+            const response = await fetch(this._pagesUrl(this.directory, this.lastPagesWant));
+            if (!response.ok) return;
             const data = await response.json();
             const diskPages = data.pages || [];
             const byName = new Map(diskPages.map(p => [p.name, p]));
@@ -264,9 +331,16 @@ class PngViewer {
             });
             if (changed) this.updateUI();
 
-            if (diskPages.length < knownTotal) scheduleNext();
+            if (diskPages.length >= knownTotal) {
+                nextDelay = null;
+            } else {
+                nextDelay = this.pollAgain ? 0 : this._pollDelay();
+            }
         } catch {
-            scheduleNext();
+            // сбой сети — nextDelay остаётся прежним темпом
+        } finally {
+            this.pollInFlight = false;
+            if (nextDelay !== null) this._schedulePoll(nextDelay);
         }
     }
 
@@ -485,6 +559,7 @@ class PngViewer {
             this.currentPage = newCurrentPage;
             this.updatePageIndicator();
             this._notifyPageChange();  // ИНТЕГРАЦИЯ: Уведомление о смене страницы
+            this._onCurrentPageChanged();
         }
     }
 
@@ -651,7 +726,8 @@ class PngViewer {
             this.currentPage = pageIndex;
             this.updatePageIndicator();
             this._notifyPageChange();  // ИНТЕГРАЦИЯ: Уведомление о смене страницы
-            
+            this._onCurrentPageChanged();
+
             // ИСПРАВЛЕНИЕ: instant scroll для начальной навигации
             container.scrollIntoView({ 
                 behavior: instant ? 'instant' : 'smooth', 
