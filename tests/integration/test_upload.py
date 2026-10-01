@@ -1,6 +1,7 @@
-# Version 1.4 - 21.06.2026
+# Version 1.5 - 01.10.2026 14:35:00 GMT
 # Integration tests: upload endpoints
 # Описание: In-process тесты для всех endpoints /api/upload/*.
+# 1.5: submit с пустым dopshifr сохраняет отчёт без ДопШифр (id вида 00205).
 # 1.1: удалён ассерт call[3] is False (published=False) — параметр убран из send_report_decision.
 # 1.2: тест 413 обновлён под потоковую схему (patching upload_router.MAX_ARCHIVE_SIZE);
 #      добавлены TestOversize (temp-мусор) и TestDiskGuard (507 + /status).
@@ -225,6 +226,21 @@ class TestSubmit:
         assert saved["Маршрут"] == "Горный маршрут"
         assert saved["Год"] == 2025
         assert saved["ТипФайла"] == "zip"
+
+    def test_submit_empty_dopshifr_stays_empty(
+        self, client, logged_in_user, tlib_db_path, tmp_dirs, mailbox
+    ):
+        r = submit_report(client, shifr=205, dopshifr="")
+        assert r.status_code == 200
+        data = r.json()
+        assert data.get("ok") is True
+        assert data.get("id") == "00205"
+        staging = tmp_dirs["staging"]
+        json_path = staging / "00205.json"
+        assert json_path.exists()
+        assert (staging / "00205.zip").exists()
+        saved = json.loads(json_path.read_text(encoding="utf-8"))
+        assert saved["ДопШифр"] is None
 
     def test_submit_duplicate_returns_409(
         self, client, logged_in_user, tlib_db_path, tmp_dirs, mailbox

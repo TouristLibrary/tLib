@@ -1,6 +1,7 @@
-# Version 2.5 - 05.07.2026 21:15:00 GMT
+# Version 2.6 - 01.10.2026 14:35:00 GMT
 # Upload Router для TlibWebApp
 # Описание: Тонкий HTTP-слой API загрузки отчётов. Вся бизнес-логика — в services/upload/upload_service.py.
+# 2.6: пустой ДопШифр в submit и submit-edit остаётся пустым (дефолт Form("") вместо TLIB).
 # 2.5: новый GET /api/upload/my-reports — список опубликованных отчётов текущего
 #      пользователя для раздела «Мои отчёты» (доступен всем авторизованным).
 # 2.0: роутер сокращён до валидации входа + auth-check + вызов сервиса; бизнес-логика вынесена.
@@ -188,7 +189,7 @@ def upload_status(request: Request):
 async def submit(
     request: Request,
     shifr: int = Form(...),
-    dopshifr: str = Form("TLIB"),
+    dopshifr: str = Form(""),
     marshrut: str = Form(...),
     raion_obshiy: str = Form(""),
     raion: str = Form(""),
@@ -466,7 +467,7 @@ async def submit_edit(
     request: Request,
     edit_orig_id: str = Form(...),
     shifr: int = Form(...),
-    dopshifr: str = Form("TLIB"),
+    dopshifr: str = Form(""),
     marshrut: str = Form(...),
     raion_obshiy: str = Form(""),
     raion: str = Form(""),

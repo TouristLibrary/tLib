@@ -409,7 +409,7 @@ UI: на страницах `login.html`, `admin.html`, `upload.html` кнопк
 
 Сохраняет отчёт (`multipart/form-data`) в `data.up/10_up` и уведомляет админов письмом. Требует авторизацию.
 
-**Поля формы:** `shifr` (int, обязателен), `god` (int, обязателен), `marshrut` (обязателен), `file` (zip/pdf, обязателен), `dopshifr` (по умолчанию `TLIB`), `raion_obshiy`, `raion`, `avtor`, `tip`, `kategoriya_s`, `kategoriya_po`, `mesyats_s`, `mesyats_po`, `tip_sudna`, `gorod`, `kommentarii`, `zagruzil_imya`.
+**Поля формы:** `shifr` (int, обязателен), `god` (int, обязателен), `marshrut` (обязателен), `file` (zip/pdf, обязателен), `dopshifr` (по умолчанию пусто; форма при открытии подставляет `TLIB`, стёртое поле сохраняется пустым — id вида `00042`), `raion_obshiy`, `raion`, `avtor`, `tip`, `kategoriya_s`, `kategoriya_po`, `mesyats_s`, `mesyats_po`, `tip_sudna`, `gorod`, `kommentarii`, `zagruzil_imya`.
 
 **Только для администраторов (необязательные):** `uploader_id` (int) — переназначить `ЗагрузилID` на указанного пользователя (проверяется по `auth.db`); `uploader_cleared` (bool) — обнулить `ЗагрузилID`. Если пользователь с `uploader_id` не найден в `auth.db`, значение игнорируется.
 
