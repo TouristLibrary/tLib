@@ -1,4 +1,4 @@
-# Version 2.5 - 30.09.2026 16:10:58 GMT
+# Version 2.6 - 01.10.2026 15:04:18 GMT
 # Cache Prepare Service для TlibWebApp
 # Описание: Централизованный сервис подготовки кеша архивов.
 #           Единственный владелец _prepare.json и lock-логики.
@@ -22,6 +22,8 @@
 #      CACHE_STALE_LOCK_TIMEOUT_MINUTES (рестарт между захватом lock и записью статуса или между
 #      удалением статуса и снятием lock) — и захватывает заново; WARNING «Orphaned cache lock removed».
 #      Lock, снятый владельцем между попыткой захвата и проверкой возраста, берётся сразу без WARNING.
+# 2.6: extract_ms (перераспаковка PDF из ZIP, 0 для standalone) в «PDF conversion resumed».
+#      Гистерезис докрутки видит и дырки позади want (окно cache_watch 1.5).
 
 import os
 import json
@@ -518,7 +520,7 @@ def _mark_resume_failed(archive_name: str, png_dir_rel: str, error: str) -> None
     """
     Закрывает директорию на готовых страницах после сбоя докрутки: запись PDF — error,
     маркер _pages_total.txt и pages в meta — число готовых PNG (без PNG маркер удаляется).
-    Директория перестаёт быть частичной: опрос вьюера (раз в 2 с) не ставит холостую
+    Директория перестаёт быть частичной: опрос вьюера (раз в 1–2 с) не ставит холостую
     докрутку, а вьюер показывает готовые страницы, не ожидая недостающих. Без готовых
     страниц у вьюера штатный путь «ретраи /pages → ошибка загрузки». Причина — в app.log.
     """
@@ -541,7 +543,8 @@ async def resume_pdf_conversion(archive_name: str, png_dir_rel: str) -> None:
     """
     Докручивает PDF, поставленный на паузу (status=partial в _meta.json), с недостающих страниц
     окна просмотра. Запускается только из GET /api/png/.../pages (heartbeat просмотра).
-    Готовые PNG не трогаются (без purge); конвертер снова встанет на паузу, когда окно готово.
+    Готовые PNG не трогаются (без purge); конвертер снова встанет на паузу, когда окно и страницы
+    позади want готовы или зритель ушёл.
     В «В кэш» не учитывается — отчёт учла подготовка.
 
     Args:
@@ -559,8 +562,9 @@ async def resume_pdf_conversion(archive_name: str, png_dir_rel: str) -> None:
     if not source_path.exists():
         # is_cache_valid_from_meta считает кеш удалённого источника валидным, но рендерить не из чего
         return
-    # Гистерезис: впереди от просматриваемой страницы готова половина окна — ждём. Без него листание
-    # запускало бы докрутку на каждую страницу: lock, ensure_cache_space, перераспаковка PDF из ZIP
+    # Гистерезис: впереди от просматриваемой страницы готова половина окна и позади нет дырок — ждём.
+    # Без него листание запускало бы докрутку на каждую страницу: lock, ensure_cache_space,
+    # перераспаковка PDF из ZIP. Дырки позади want заполняет один запуск целиком
     zip_member = entry["zip_path"]
     if first_missing_in_window(get_png_dir_path(archive_name, zip_member), Path(zip_member).stem,
                                entry.get("pages", 0), PDF_CONVERT_LOOKAHEAD_PAGES // 2) is None:
@@ -591,11 +595,16 @@ async def resume_pdf_conversion(archive_name: str, png_dir_rel: str) -> None:
         write_prepare_status(archive_name, stage=CACHE_STAGE_CONVERTING, sub="pdf",
                              pages_total=entry.get("pages", 0), converting_path=zip_member)
 
-        # Шаг 5: источник — standalone PDF напрямую, из ZIP — перераспаковка одного файла
+        # Шаг 5: источник — standalone PDF напрямую, из ZIP — перераспаковка одного файла.
+        # extract_ms — цена перераспаковки на каждую докрутку: по ней решается, хранить ли
+        # распакованный PDF, пока документ недорисован
+        extract_ms = 0
         if source_path.suffix.lower() == ".pdf":
             pdf_path = source_path
         else:
+            extract_start = time.perf_counter()
             pdf_path = await extract_single_member(source_path, zip_member, work_dir)
+            extract_ms = round((time.perf_counter() - extract_start) * 1000)
 
         # Шаг 6: докручиваем недостающие страницы
         from services.conversion.pdf_to_png_service import convert_pdf_to_directory
@@ -630,7 +639,8 @@ async def resume_pdf_conversion(archive_name: str, png_dir_rel: str) -> None:
             ensure_cache_space(meta["cache_size_bytes"])
 
         log_with_data(logging.INFO, "PDF conversion resumed", archive=archive_name, png_dir=png_dir_rel,
-                      rendered=rendered, done=pages_done, total=page_count, completed=completed)
+                      rendered=rendered, done=pages_done, total=page_count, completed=completed,
+                      extract_ms=extract_ms)
 
     except Exception as e:
         app_logger.error(f"Error resuming PDF conversion {archive_name}/{png_dir_rel}: {e}", exc_info=True)

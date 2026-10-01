@@ -1,4 +1,4 @@
-# Version 5.2 - 26.09.2026 10:00:00 GMT
+# Version 5.3 - 01.10.2026 14:57:14 GMT
 # PDF to PNG Conversion Service для TlibWebApp
 # Описание: Конвертация PDF файлов в PNG страницы.
 #           Использует PyMuPDF (fitz) для рендеринга PDF страниц.
@@ -19,6 +19,7 @@
 #      (pages_done, page_count, rendered, completed); одна INFO-строка «PDF conversion run» на запуск.
 # 5.2: generate_png_filename переехал в services/cache/cache_service.py — имена PNG нужны и окну
 #      рендера (cache_watch) без циклического импорта; импорт из этого модуля продолжает работать.
+# 5.3: render_ms (длительность запуска в thread pool) в «PDF conversion run».
 
 import os
 import time
@@ -230,19 +231,23 @@ async def convert_pdf_to_directory(
         config = get_default_config()
 
         loop = asyncio.get_event_loop()
+        start_time = time.perf_counter()
         pages_done, page_count, rendered, completed = await loop.run_in_executor(
             None,
             _convert_pdf_to_directory_sync,
             pdf_path, output_dir, pdf_stem, config, on_progress
         )
+        render_ms = round((time.perf_counter() - start_time) * 1000)
 
         if page_count == 0:
             return False, "No pages in PDF"
 
         # Наблюдаемость: сумма rendered по этим строкам — «страниц в час»; полных конвертаций
-        # при рендере по окну почти нет, их счётчик нагрузку больше не показывает
+        # при рендере по окну почти нет, их счётчик нагрузку больше не показывает.
+        # render_ms рядом с extract_ms докрутки — цена перераспаковки против цены рендера
         log_with_data(logging.INFO, "PDF conversion run", png_dir=output_dir.as_posix(),
-                      rendered=rendered, done=pages_done, total=page_count, completed=completed)
+                      rendered=rendered, done=pages_done, total=page_count, completed=completed,
+                      render_ms=render_ms)
 
         return True, (pages_done, page_count, rendered, completed)
 

@@ -1,4 +1,4 @@
-# Version 3.7 - 10.07.2026 09:45:00 GMT
+# Version 3.8 - 01.10.2026 14:58:06 GMT
 # Search Router для TlibWebApp с поддержкой пагинации и ограничением тяжёлых запросов
 # Описание: API endpoint POST /api/search для серверного поиска в базе данных SQLite. Принимает параметры формы поиска,
 #           поддерживает все поля: Шифр, ДопШифр, Маршрут, Район, Автор, РайонОбщий, Тип, КатегорияС, КатегорияПо, Год (через ГодС/ГодПо в форме), МесяцС, МесяцПо.
@@ -15,6 +15,8 @@
 # 3.6: SQL-исполнение (count_search/execute_search) вынесено в services/database/search_executor.py.
 # 3.7: _annotate_hidden — проставляет row["Скрыт"] по app.state.hidden_reports (отчёт остаётся
 #           в поиске, но фронтенд скрывает файл; см. services/hidden_reports.py).
+# 3.8: _run_timed — в «Поиск завершен» поля wait_ms (ожидание свободного потока) и sql_ms
+#           (COUNT + основной запрос): видно, ждёт ли поиск пул или сам SQL.
 
 import asyncio
 from fastapi import APIRouter, Request
@@ -55,6 +57,25 @@ def _annotate_hidden(results: list, app_state) -> None:
         except (ValueError, TypeError):
             continue
         row["Скрыт"] = norm_id in hidden
+
+
+async def _run_timed(fn, *args):
+    """Выполняет fn в потоке и замеряет, сколько вызов ждал свободного потока и сколько шёл сам.
+    По time_ms медленный SQL не отличить от поиска, стоящего в очереди пула за рендером PDF
+    или сборкой ZIP, — а от этого зависит, нужен ли поиску отдельный пул.
+
+    Returns:
+        (result, wait_ms, sql_ms)
+    """
+    queued = time.perf_counter()
+
+    def timed():
+        started = time.perf_counter()
+        result = fn(*args)
+        return result, started, time.perf_counter()
+
+    result, started, finished = await asyncio.to_thread(timed)
+    return result, (started - queued) * 1000, (finished - started) * 1000
 
 
 # ============================================================================
@@ -124,9 +145,10 @@ async def search_database(request: Request):
         # Определение тяжести запроса
         # Шаг 1: Эвристика — проверяем наличие селективных фильтров
         known_total: int | None = None
+        wait_ms = sql_ms = 0.0
         if not is_light_query(form_dict, FILTER_MIN_LENGTH):
             # Шаг 2: COUNT для точного определения тяжести — в потоке
-            total_count = await asyncio.to_thread(
+            total_count, wait_ms, sql_ms = await _run_timed(
                 count_search, db_path_str, kategoria_list, query, params
             )
             known_total = total_count
@@ -142,11 +164,13 @@ async def search_database(request: Request):
 
         try:
             # Основной запрос — в потоке
-            results, total_count = await asyncio.to_thread(
+            (results, total_count), wait, sql = await _run_timed(
                 execute_search,
                 db_path_str, kategoria_list, query, params,
                 limit, offset, known_total
             )
+            wait_ms = round(wait_ms + wait, 2)
+            sql_ms = round(sql_ms + sql, 2)
 
             _annotate_hidden(results, request.app.state)
 
@@ -159,7 +183,9 @@ async def search_database(request: Request):
                              total=total_count,
                              offset=offset,
                              heavy=is_heavy_query,
-                             time_ms=time_ms)
+                             time_ms=time_ms,
+                             wait_ms=wait_ms,
+                             sql_ms=sql_ms)
 
                 response_data = {
                     "success": True,
@@ -175,7 +201,9 @@ async def search_database(request: Request):
                 log_with_data(logging.INFO, "Поиск завершен",
                              results=len(results),
                              heavy=is_heavy_query,
-                             time_ms=time_ms)
+                             time_ms=time_ms,
+                             wait_ms=wait_ms,
+                             sql_ms=sql_ms)
 
                 response_data = {
                     "success": True,

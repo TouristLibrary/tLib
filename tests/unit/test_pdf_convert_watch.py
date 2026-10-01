@@ -1,10 +1,11 @@
-# Version 2.1 - 26.09.2026 11:49:27 GMT
+# Version 2.3 - 01.10.2026 15:14:33 GMT
 # Тесты рендера PDF по окну просмотра (services/conversion/pdf_to_png_service.py,
 # services/cache/cache_watch.first_missing_in_window, cache_prepare_service.resume_pdf_conversion)
 # Описание: Без свежего heartbeat конвертер рендерит только первые K страниц (прогрев), со свежим —
-#           окно из N страниц от want; страницы позади want ждут, пока want туда вернётся.
-#           Готовые PNG не перерисовываются. Докрутка — no-op без lock и распаковки, пока впереди
-#           от want готова половина окна (гистерезис). Сквозные сценарии: standalone PDF и PDF
+#           окно из N страниц от want, затем страницы позади want от ближайшей, пока heartbeat
+#           не старше BACKFILL_FRESH. Готовые PNG не перерисовываются. Докрутка — no-op без lock
+#           и распаковки, пока впереди от want готова половина окна и позади нет дырок
+#           (гистерезис). Сквозные сценарии: standalone PDF и PDF
 #           из ZIP уходят в partial и докручиваются через want; «В кэш» учитывает подготовку;
 #           сбой докрутки переводит запись в error и освобождает lock.
 #           PDF генерируется PyMuPDF; без fitz тесты пропускаются.
@@ -13,6 +14,8 @@
 # 2.0: переписаны под окно просмотра (K/N подменяются малыми) вместо окна тишины IDLE_TIMEOUT.
 # 2.1: ensure_cache_space вызывается в конце запуска с cache_size_bytes из записанной meta;
 #      повторная подготовка валидного кеша и холостая докрутка место не освобождают.
+# 2.2: окно от want дозаполняет страницы позади (порядок от ближайшей, остановка по stale heartbeat).
+# 2.3: порог дозаполнения BACKFILL_FRESH короче окна свежести; докрутка дозаполняет дырку позади want.
 
 import asyncio
 import json
@@ -120,16 +123,78 @@ def test_without_viewer_renders_prewarm_pages(tmp_path, pdf_path, window, heartb
     assert _ready_pages(out_dir) == {1, 2}
 
 
+def _render_order(snapshots):
+    """Порядок рендеринга — разности соседних снимков готовых PNG: без таймингов и mtime,
+    которые у файлов, записанных за миллисекунды, могут совпасть."""
+    return [sorted(after - before) for before, after in zip(snapshots, snapshots[1:])]
+
+
 def test_fresh_heartbeat_renders_window_from_want(tmp_path, pdf_path, window):
-    """Смотрят 4-ю страницу, N=2 — рендерятся 4 и 5; страницы до want не трогаются."""
+    """Смотрят 4-ю страницу, N=2 — рендерятся 4 и 5, затем страницы позади want; 6-я вне окна."""
     window(2, 2)
     out_dir = tmp_path / f"{STEM}-png"
     _watch(out_dir, want=4)
 
     result = _convert_pdf_to_directory_sync(pdf_path, out_dir, STEM, _CONFIG)
 
+    assert result == (5, PAGES, 5, False)
+    assert _ready_pages(out_dir) == {1, 2, 3, 4, 5}
+
+
+def test_backfill_behind_want_nearest_first(tmp_path, pdf_path, window, monkeypatch):
+    """Окно впереди готово — страницы позади want дозаполняются от ближайшей к началу."""
+    window(2, 2)
+    out_dir = tmp_path / f"{STEM}-png"
+    snapshots = []
+
+    def viewer(_dir):
+        snapshots.append(_ready_pages(out_dir))
+        return time.time(), 5
+
+    monkeypatch.setattr(cache_watch_module, "read_watch", viewer)
+
+    result = _convert_pdf_to_directory_sync(pdf_path, out_dir, STEM, _CONFIG)
+
+    assert _render_order(snapshots) == [[5], [6], [4], [3], [2], [1]]
+    assert result == (PAGES, PAGES, PAGES, True)
+
+
+def test_backfill_stops_when_heartbeat_stale(tmp_path, pdf_path, window, monkeypatch):
+    """Зритель ушёл посреди дозаполнения — запуск встаёт на паузу: окно прогрева готово,
+    страницы позади want без зрителя не рендерятся."""
+    window(2, 2)
+    out_dir = tmp_path / f"{STEM}-png"
+    _convert_pdf_to_directory_sync(pdf_path, out_dir, STEM, _CONFIG)
+    assert _ready_pages(out_dir) == {1, 2}
+    snapshots = []
+
+    def viewer(_dir):
+        ready = _ready_pages(out_dir)
+        snapshots.append(ready)
+        # heartbeat свежий, пока не отрендерены окно 5–6 и одна страница позади
+        age = 0 if len(ready) < 5 else cache_watch_module.PDF_CONVERT_IDLE_TIMEOUT_SECONDS + 5
+        return time.time() - age, 5
+
+    monkeypatch.setattr(cache_watch_module, "read_watch", viewer)
+
+    result = _convert_pdf_to_directory_sync(pdf_path, out_dir, STEM, _CONFIG)
+
+    assert _render_order(snapshots) == [[5], [6], [4]]
+    assert result == (5, PAGES, 3, False)
+    assert _ready_pages(out_dir) == {1, 2, 4, 5, 6}
+
+
+def test_backfill_needs_fresher_heartbeat_than_window(tmp_path, pdf_path, window):
+    """Heartbeat свежий для окна (≤ IDLE_TIMEOUT), но старше BACKFILL_FRESH — рендерится только
+    окно вперёд: бот, ушедший с deep-link, не рисует страницы позади want."""
+    window(2, 2)
+    out_dir = tmp_path / f"{STEM}-png"
+    _watch(out_dir, want=5, age=10)
+
+    result = _convert_pdf_to_directory_sync(pdf_path, out_dir, STEM, _CONFIG)
+
     assert result == (2, PAGES, 2, False)
-    assert _ready_pages(out_dir) == {4, 5}
+    assert _ready_pages(out_dir) == {5, 6}
 
 
 def test_window_follows_want(tmp_path, pdf_path, window, monkeypatch):
@@ -137,9 +202,7 @@ def test_window_follows_want(tmp_path, pdf_path, window, monkeypatch):
     window(2, 2)
     out_dir = tmp_path / f"{STEM}-png"
 
-    # Окно пересчитывается перед каждой страницей — там же снимаем готовые PNG.
-    # Порядок рендеринга — разности соседних снимков: без таймингов и mtime, которые
-    # у файлов, записанных за миллисекунды, могут совпасть.
+    # Окно пересчитывается перед каждой страницей — там же снимаем готовые PNG
     snapshots = []
 
     def viewer(_dir):
@@ -151,8 +214,7 @@ def test_window_follows_want(tmp_path, pdf_path, window, monkeypatch):
 
     _convert_pdf_to_directory_sync(pdf_path, out_dir, STEM, _CONFIG)
 
-    rendered = [sorted(after - before) for before, after in zip(snapshots, snapshots[1:])]
-    assert rendered == [[4], [5], [1], [2]]
+    assert _render_order(snapshots) == [[4], [5], [1], [2]]
     assert _ready_pages(out_dir) == {1, 2, 4, 5}
 
 
@@ -333,6 +395,30 @@ def test_resume_skips_when_half_window_ready(tmp_path, cache_root, window, monke
     assert calls == []
     assert _meta(cache_root, "00005-TST") == meta_before
     _assert_lock_released(cache_root, "00005-TST")
+
+
+def test_resume_fills_hole_behind_want(tmp_path, cache_root, window):
+    """Гистерезис видит дырки позади want: впереди от want всё готово, но 3–4 нет —
+    докрутка идёт и дозаполняет их."""
+    window(2, 4)
+    source = _make_zip(tmp_path, "00006-TST")
+    _run(prepare_archive_cache("00006-TST", source))
+    png_dir = cache_root / "00006-TST" / "dir1" / "report-png"
+    assert _ready_pages(png_dir, "report") == {1, 2}
+
+    # Дырка: смотрели 5-ю, но heartbeat уже старше порога дозаполнения — рендерится только окно 5–6
+    _watch(png_dir, want=5, age=cache_watch_module.PDF_CONVERT_BACKFILL_FRESH_SECONDS + 1)
+    _convert_pdf_to_directory_sync(tmp_path / "report.pdf", png_dir, "report", _CONFIG)
+    assert _ready_pages(png_dir, "report") == {1, 2, 5, 6}
+
+    # Снова смотрят 5-ю: впереди всё готово, позади дырка 3–4 — докрутка её дозаполняет
+    _watch(png_dir, want=5)
+    _run(resume_pdf_conversion("00006-TST", "dir1/report-png"))
+
+    entry = _meta(cache_root, "00006-TST")["files"][0]
+    assert "status" not in entry and "pages_done" not in entry
+    assert _ready_pages(png_dir, "report") == set(range(1, PAGES + 1))
+    _assert_lock_released(cache_root, "00006-TST")
 
 
 def test_resume_failure_closes_dir_on_ready_pages(tmp_path, cache_root, window, monkeypatch):
