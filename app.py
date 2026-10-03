@@ -1,6 +1,7 @@
-# Version 6.9 - 04.09.2026 14:25:00 GMT
+# Version 7.0 - 03.10.2026 09:36:10 GMT
 # FastAPI приложение для просмотра архивов и поиска в базе данных
 # Описание: Главный файл приложения, инициализирует FastAPI сервер, регистрирует роутеры и middleware.
+# 7.0: lifespan shutdown останавливает процесс-воркер рендера PDF→PNG (shutdown_render_pool).
 # 6.9: тема письма о старте сервера использует MAIL_SUBJECT_PREFIX (домен из SITE_URL) вместо "[tLib]".
 # 6.8: удалён signal_handler (перехватывал SIGTERM/SIGINT и только логировал их, не завершая
 #           процесс) — из-за него uvicorn не получал сигнал, graceful shutdown (lifespan) не
@@ -85,6 +86,9 @@ from config import AUTH_CLEANUP_INTERVAL
 
 # Импорт сервиса скрытых отчётов
 from services.hidden_reports import load_hidden_reports
+
+# Остановка процесса-воркера рендера PDF→PNG на shutdown
+from services.conversion.pdf_to_png_service import shutdown_render_pool
 
 # ============================================================================
 # ЛОГИРОВАНИЕ (настроено в logging_config.py)
@@ -256,6 +260,10 @@ async def lifespan(app):
             await app.state.digest_task
         except asyncio.CancelledError:
             pass
+
+    # Останавливаем процесс-воркер рендера PDF→PNG: фоновые задачи запросов (рендер окна)
+    # uvicorn дождался до lifespan shutdown, воркер простаивает и выходит сразу
+    shutdown_render_pool()
 
     app_logger.info("Сервер остановлен")
 

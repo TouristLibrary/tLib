@@ -1,4 +1,4 @@
-# Version 2.6 - 01.10.2026 15:04:18 GMT
+# Version 2.7 - 03.10.2026 09:36:10 GMT
 # Cache Prepare Service для TlibWebApp
 # Описание: Централизованный сервис подготовки кеша архивов.
 #           Единственный владелец _prepare.json и lock-логики.
@@ -24,10 +24,13 @@
 #      Lock, снятый владельцем между попыткой захвата и проверкой возраста, берётся сразу без WARNING.
 # 2.6: extract_ms (перераспаковка PDF из ZIP, 0 для standalone) в «PDF conversion resumed».
 #      Гистерезис докрутки видит и дырки позади want (окно cache_watch 1.5).
+# 2.7: ensure_cache_space — в thread pool: обход кеша и shutil.rmtree при вытеснении
+#      блокировали цикл событий напрямую.
 
 import os
 import json
 import time
+import asyncio
 import shutil
 import logging
 from pathlib import Path
@@ -408,8 +411,9 @@ async def prepare_archive_cache(archive_name: str, zip_path: Path, stats_collect
         _record_cache_prepared(stats_collector)
 
         # Шаг 12: Освобождаем место по фактическому размеру: своя папка под lock в обход не входит.
-        # После учёта подготовки — сбой обхода кеша не должен маскировать готовый кеш
-        ensure_cache_space(size)
+        # После учёта подготовки — сбой обхода кеша не должен маскировать готовый кеш.
+        # В thread pool: обход кеша и rmtree при вытеснении не должны стоять в цикле событий
+        await asyncio.get_event_loop().run_in_executor(None, ensure_cache_space, size)
 
     except Exception as e:
         app_logger.error(f"Error preparing cache for {archive_name}: {e}", exc_info=True)
@@ -500,8 +504,9 @@ async def convert_standalone_pdf(pdf_path: Path, archive_name: str, stats_collec
         _record_cache_prepared(stats_collector)
 
         # Шаг 8: Освобождаем место по фактическому размеру: своя папка под lock в обход не входит.
-        # После учёта подготовки — сбой обхода кеша не должен маскировать готовый кеш
-        ensure_cache_space(size)
+        # После учёта подготовки — сбой обхода кеша не должен маскировать готовый кеш.
+        # В thread pool: обход кеша и rmtree при вытеснении не должны стоять в цикле событий
+        await asyncio.get_event_loop().run_in_executor(None, ensure_cache_space, size)
 
     except Exception as e:
         app_logger.error(f"Error converting standalone PDF {archive_name}: {e}", exc_info=True)
@@ -634,9 +639,9 @@ async def resume_pdf_conversion(archive_name: str, png_dir_rel: str) -> None:
             fields = {"pages_done": pages_done}
         meta = update_meta_file_entry(archive_name, png_dir_rel, fields)
 
-        # Шаг 8: освобождаем место по фактическому размеру папки с новыми страницами
+        # Шаг 8: освобождаем место по фактическому размеру папки с новыми страницами (в thread pool)
         if meta is not None:
-            ensure_cache_space(meta["cache_size_bytes"])
+            await asyncio.get_event_loop().run_in_executor(None, ensure_cache_space, meta["cache_size_bytes"])
 
         log_with_data(logging.INFO, "PDF conversion resumed", archive=archive_name, png_dir=png_dir_rel,
                       rendered=rendered, done=pages_done, total=page_count, completed=completed,

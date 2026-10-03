@@ -1,8 +1,9 @@
-# Version 5.3 - 01.10.2026 14:57:14 GMT
+# Version 6.1 - 03.10.2026 10:17:22 GMT
 # PDF to PNG Conversion Service для TlibWebApp
 # Описание: Конвертация PDF файлов в PNG страницы.
 #           Использует PyMuPDF (fitz) для рендеринга PDF страниц.
-#           Открывает PDF один раз, рендерит и сохраняет страницы по одной.
+#           Рендер и запись PNG — в процессе-воркере (pdf_render_worker), по одной странице:
+#           PyMuPDF держит GIL весь рендер, в потоке главного процесса он морил бы цикл событий.
 #           Пиковое потребление RAM — одна страница, а не весь документ.
 #           Lock на уровне архива обеспечивается cache_prepare_service.
 #           Конфигурация через PDF_TO_PNG_* параметры в config.py.
@@ -20,11 +21,20 @@
 # 5.2: generate_png_filename переехал в services/cache/cache_service.py — имена PNG нужны и окну
 #      рендера (cache_watch) без циклического импорта; импорт из этого модуля продолжает работать.
 # 5.3: render_ms (длительность запуска в thread pool) в «PDF conversion run».
+# 6.0: рендер страницы и page_count — в spawn-процессе (ProcessPoolExecutor, PDF_RENDER_WORKERS):
+#      цикл окна, on_progress и логи остаются в потоке. Воркер умер (BrokenProcessPool) — пул
+#      пересоздаётся следующим рендером, запуск завершается ошибкой, сервер жив.
+#      shutdown_render_pool() — для lifespan shutdown.
+# 6.1: shutdown_render_pool ждёт выхода воркера (wait=True) — uvicorn после lifespan переподнимает
+#      SIGTERM и умирает без atexit, и не дошедший sentinel оставил бы воркер жить до SIGKILL.
 
-import os
 import time
 import asyncio
 import logging
+import threading
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Tuple
 from dataclasses import dataclass
@@ -36,6 +46,7 @@ from config import (
     PDF_TO_PNG_COLORSPACE,
     PDF_TO_PNG_ALPHA,
     PDF_CONVERT_LOOKAHEAD_PAGES,
+    PDF_RENDER_WORKERS,
 )
 
 # Импорт логгеров
@@ -48,6 +59,8 @@ from services.cache.cache_service import generate_png_filename
 # Проверка наличия PyMuPDF
 try:
     import fitz  # PyMuPDF
+    # Воркер импортирует fitz на верхнем уровне — без PyMuPDF модуль не грузится
+    from services.conversion import pdf_render_worker
     HAS_PYMUPDF = True
 except ImportError:
     HAS_PYMUPDF = False
@@ -110,6 +123,61 @@ def count_pdf_pages(pdf_path: Path) -> int:
 
 
 # ============================================================================
+# ПРОЦЕСС-ВОРКЕР РЕНДЕРА
+# ============================================================================
+
+# Пул создаётся при первом рендере: прогрев на старте не делаем — ~1 с spawn платит первый
+# читатель после рестарта. Lock — два рендер-потока (разные архивы) могут прийти сюда
+# одновременно и создать по пулу.
+_render_pool = None
+_render_pool_lock = threading.Lock()
+
+
+def _get_pool() -> ProcessPoolExecutor:
+    """Пул процессов-воркеров рендера (spawn — см. docstring pdf_render_worker)."""
+    global _render_pool
+    with _render_pool_lock:
+        if _render_pool is None:
+            _render_pool = ProcessPoolExecutor(
+                max_workers=PDF_RENDER_WORKERS,
+                mp_context=multiprocessing.get_context("spawn"),
+                initializer=pdf_render_worker.ignore_stop_signals,
+            )
+        return _render_pool
+
+
+def _reset_pool(pool: ProcessPoolExecutor) -> None:
+    """
+    Сломанный пул (воркер умер: segfault MuPDF, OOM killer) задач не принимает —
+    следующий рендер создаст новый. Сбрасывается только этот пул: второй рендер-поток мог
+    получить тот же BrokenProcessPool позже, чем третий уже создал исправный пул.
+    """
+    global _render_pool
+    with _render_pool_lock:
+        if _render_pool is pool:
+            _render_pool = None
+    pool.shutdown(wait=False)
+
+
+def shutdown_render_pool() -> None:
+    """
+    Останавливает воркер на lifespan shutdown. Uvicorn дожидается фоновых задач запросов
+    (рендер окна) до lifespan, поэтому пул здесь простаивает и воркер выходит сразу;
+    cancel_futures — не дошедшие до воркера страницы не рендерятся: процесс всё равно завершается.
+
+    wait=True: после lifespan uvicorn восстанавливает обработчики и переподнимает SIGTERM —
+    процесс умирает мгновенно, без atexit и _python_exit. При wait=False sentinel идёт к воркеру
+    через feeder-поток и pipe наперегонки с этим сигналом; проиграл — воркер, игнорирующий
+    SIGTERM, висит на очереди задач до SIGKILL по TimeoutStopSec. Ожидание — миллисекунды.
+    """
+    global _render_pool
+    with _render_pool_lock:
+        pool, _render_pool = _render_pool, None
+    if pool is not None:
+        pool.shutdown(wait=True, cancel_futures=True)
+
+
+# ============================================================================
 # STREAMING: РЕНДЕРИНГ СТРАНИЦЫ ЗА СТРАНИЦЕЙ С НЕМЕДЛЕННОЙ ЗАПИСЬЮ НА ДИСК
 # ============================================================================
 
@@ -122,7 +190,8 @@ def _convert_pdf_to_directory_sync(
 ) -> Tuple[int, int, int, bool]:
     """
     Рендерит недостающие страницы окна просмотра PDF в PNG.
-    Открывает PDF один раз, рендерит и сохраняет страницы по одной.
+    Страницы рендерятся и сохраняются по одной в процессе-воркере (render_page),
+    этот поток только выбирает следующую и ждёт её: в нём GIL рендером не занят.
     Пиковое потребление RAM — одна страница, а не весь документ.
     Синхронная функция для thread pool.
 
@@ -141,19 +210,16 @@ def _convert_pdf_to_directory_sync(
 
     Returns:
         (pages_done, page_count, rendered, completed) — rendered: страниц за этот запуск
+
+    Raises:
+        BrokenProcessPool: воркер умер — пул сброшен, запуск завершается ошибкой
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if config.colorspace == "gray":
-        cs = fitz.csGRAY
-    else:
-        cs = fitz.csRGB
-
-    matrix = fitz.Matrix(config.zoom, config.zoom)
-
-    doc = fitz.open(pdf_path)
+    pool = _get_pool()
+    i = None
     try:
-        page_count = len(doc)
+        page_count = pool.submit(pdf_render_worker.page_count, str(pdf_path)).result()
 
         existing = {p.name for p in output_dir.glob("*.png")}
         done = {i for i in range(page_count) if generate_png_filename(pdf_stem, i) in existing}
@@ -170,17 +236,11 @@ def _convert_pdf_to_directory_sync(
 
             start_time = time.perf_counter()
 
-            page = doc[i]
-            pixmap = page.get_pixmap(matrix=matrix, colorspace=cs, alpha=config.alpha)
-            png_data = pixmap.tobytes(output="png")
-            pixmap = None  # освобождаем память сразу
-
-            # tmp-имя не матчится glob("*.png") и исключается из cache_size_bytes ('.tmp-')
             file_path = output_dir / generate_png_filename(pdf_stem, i)
-            tmp_path = file_path.with_name(f"{file_path.name}.tmp-{os.getpid()}")
-            tmp_path.write_bytes(png_data)
-            os.replace(tmp_path, file_path)
-            png_data = None  # освобождаем память сразу
+            pool.submit(
+                pdf_render_worker.render_page, str(pdf_path), i, str(file_path),
+                config.zoom, config.colorspace, config.alpha
+            ).result()
 
             done.add(i)
             rendered += 1
@@ -191,8 +251,12 @@ def _convert_pdf_to_directory_sync(
             if on_progress:
                 on_progress(len(done), page_count)
 
-    finally:
-        doc.close()
+    except BrokenProcessPool:
+        # Без retry: если страница роняет MuPDF, повтор уронил бы и новый воркер
+        _reset_pool(pool)
+        log_with_data(logging.WARNING, "PDF render worker died (BrokenProcessPool), pool reset",
+                      pdf=pdf_path.as_posix(), page=None if i is None else i + 1)
+        raise
 
     return len(done), page_count, rendered, len(done) == page_count
 
@@ -206,7 +270,7 @@ async def convert_pdf_to_directory(
     """
     Конвертирует окно просмотра PDF в PNG директорию (streaming: одна страница за раз).
 
-    Открывает PDF один раз, рендерит и сохраняет страницы по одной.
+    Рендерит и сохраняет страницы по одной в процессе-воркере.
     Не держит все PNG в памяти одновременно. Готовые PNG пропускаются,
     готовое окно просмотра — пауза (см. _convert_pdf_to_directory_sync).
 

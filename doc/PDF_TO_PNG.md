@@ -34,6 +34,9 @@ PDF_TO_PNG_COLORSPACE: str = "rgb"  # "rgb" или "gray"
 
 # Альфа-канал (прозрачность)
 PDF_TO_PNG_ALPHA: bool = False  # True для прозрачного фона
+
+# Число процессов-воркеров рендера
+PDF_RENDER_WORKERS: int = 1
 ```
 
 ## Как работает
@@ -98,7 +101,7 @@ convert_pdf_to_directory() (недостающие страницы окна о�
   - **Место в кеше** освобождается после записи `_meta.json`, по фактическому размеру папки: `ensure_cache_space(cache_size_bytes)` держит «своя + чужие ≤ `MAX_CACHE_SIZE`». Заранее ничего не оценивается — оценка ошибалась в обе стороны и на каждой докрутке вытесняла бы чужие папки зря. `cache_size_bytes` не включает `_work/` с перераспакованным PDF, lock и `_prepare.json` — они удаляются при снятии lock.
 
   PDF из ZIP перераспаковывается в `_work/` одним файлом (`extract_single_member`). По завершении `status` и `pages_done` снимаются, в `app.log` — `PDF conversion resumed` (`rendered`/`done`/`total`/`completed`/`extract_ms` — перераспаковка из ZIP, 0 для standalone PDF). При сбое докрутки директория закрывается на готовых страницах: запись получает `"status": "error"`, а `_pages_total.txt` и `pages` в meta — число готовых PNG (без PNG маркер удаляется). Директория перестаёт быть частичной: опрос вьюера не ставит холостую докрутку на каждый запрос, вьюер показывает готовые страницы и не ждёт недостающих; причина — в `app.log`.
-- **Наблюдаемость.** Каждый запуск конвертера (подготовка и докрутка) пишет одну INFO-строку `PDF conversion run` (`png_dir`, `rendered` — страниц за запуск, `done`, `total`, `completed`, `render_ms` — длительность запуска в thread pool, включая ожидание свободного потока). Нагрузку меряет сумма `rendered` в час: полных конвертаций при рендере по окну почти нет, и их счётчик нагрузку больше не показывает. Ожидание читателя — INFO `PDF page wait` из `/pages` (`archive`, `png_dir`, `want`, `done`, `total`, `converting` — `converting_path` из `_prepare.json`, пусто, если конвертация архива не идёт): пишется на каждый опрос вьюера, пока PNG страницы `want` частичной директории нет на диске, то есть пока на экране «Страница N подготавливается…». Разбор причин — [«Читатель видит заглушки»](#читатель-видит-заглушки-что-смотреть-в-логах).
+- **Наблюдаемость.** Каждый запуск конвертера (подготовка и докрутка) пишет одну INFO-строку `PDF conversion run` (`png_dir`, `rendered` — страниц за запуск, `done`, `total`, `completed`, `render_ms` — длительность запуска, включая ожидание свободного потока и воркера: страницы PDF, которые рендерятся одновременно, чередуются в одном процессе-воркере). Нагрузку меряет сумма `rendered` в час: полных конвертаций при рендере по окну почти нет, и их счётчик нагрузку больше не показывает. Ожидание читателя — INFO `PDF page wait` из `/pages` (`archive`, `png_dir`, `want`, `done`, `total`, `converting` — `converting_path` из `_prepare.json`, пусто, если конвертация архива не идёт): пишется на каждый опрос вьюера, пока PNG страницы `want` частичной директории нет на диске, то есть пока на экране «Страница N подготавливается…». Разбор причин — [«Читатель видит заглушки»](#читатель-видит-заглушки-что-смотреть-в-логах).
 - **Фронтенд.** Вьюер стартует только для видимого PDF (`autoLoad` в `pdfViewer.js`: PDF из `file` в hash, иначе активный или первый — deep-link на второй PDF запускает один вьюер), вьюеры остальных PDF отчёта — при первом выборе их ссылки (`selectLink`): каждый запущенный png-viewer держит heartbeat своей директории, и скрытые PDF одного ZIP не отнимают конвертер у видимого. `/prepare` отдаёт `pages` — полное число страниц — и для PDF на паузе: с `data-pages-total` вьюер открывается сразу, без жеста, рисует заглушки и показывает готовые страницы. PNG на диске появляются не по порядку, поэтому png-viewer строит список `0..total-1` по имени файла (заглушки на месте недостающих) и при опросе сопоставляет страницы по имени. Открытая вкладка с длинным PDF опрашивает `/pages`, пока на диске не все страницы, — это и есть heartbeat.
 - **«В кэш»** в админке — один инкремент на подготовку отчёта: архив распакован, треки и картинки сконвертированы, у каждого PDF готовы первые K страниц, записан `_meta.json` (PDF на паузе тоже считается). Докрутки не считаются — без двойного счёта. С 25.09.2026 до выкладки рендера по окну подготовки с PDF на паузе не учитывались, поэтому провал «В кэш» за эти сутки — артефакт счётчика.
 
@@ -239,6 +242,7 @@ PDF page wait — archive=09582, png_dir=09582-png, want=40, done=25, total=150,
 ```
 PDF_TO_PNG_ENABLED=True but PyMuPDF is not installed. Install with: pip install pymupdf
 Orphaned cache lock removed — archive=09582, age_seconds=412   (lockdir без _prepare.json после рестарта)
+PDF render worker died (BrokenProcessPool), pool reset — pdf=.../09582.pdf, page=37   (page пуст, если упал page_count)
 ```
 
 ### ERROR уровень
@@ -305,16 +309,24 @@ du -sh data.cache/*/*-png/ | sort -rh | head -10
 ```
 services/
 ├── conversion/
-│   └── pdf_to_png_service.py       # Сервис конвертации
-│       ├── count_pdf_pages()           - быстрый подсчёт страниц (< 100 мс, без рендеринга)
-│       │     pre-scan в convert_standalone_pdf и convert_pdfs (_pages_total.txt)
-│       ├── convert_pdf_to_directory()  - главная async функция → (pages_done, pages, rendered, completed)
-│       └── _convert_pdf_to_directory_sync() - sync реализация (thread pool)
-│             пропускает готовые PNG, перед каждой страницей — first_missing_in_window():
-│             окно от want, затем позади want (свежий heartbeat), или первые K страниц;
-│             рендерить нечего — пауза
-│             on_progress(done, page_count) сразу после fitz.open() — сообщает pages_total
-│             INFO «PDF conversion run» (rendered/done/total/completed/render_ms) на каждый запуск
+│   ├── pdf_to_png_service.py       # Сервис конвертации
+│   │   ├── count_pdf_pages()           - быстрый подсчёт страниц (< 100 мс, без рендеринга)
+│   │   │     pre-scan в convert_standalone_pdf и convert_pdfs (_pages_total.txt)
+│   │   ├── convert_pdf_to_directory()  - главная async функция → (pages_done, pages, rendered, completed)
+│   │   ├── _convert_pdf_to_directory_sync() - sync реализация (thread pool)
+│   │   │     пропускает готовые PNG, перед каждой страницей — first_missing_in_window():
+│   │   │     окно от want, затем позади want (свежий heartbeat), или первые K страниц;
+│   │   │     рендерить нечего — пауза; страница — pool.submit(render_page).result()
+│   │   │     on_progress(done, page_count) сразу после page_count() в воркере — сообщает pages_total
+│   │   │     INFO «PDF conversion run» (rendered/done/total/completed/render_ms) на каждый запуск
+│   │   │     BrokenProcessPool → _reset_pool(), WARNING, запуск завершается ошибкой (без retry)
+│   │   └── _get_pool() / shutdown_render_pool() - ProcessPoolExecutor (spawn, PDF_RENDER_WORKERS),
+│   │         создаётся первым рендером, останавливается в lifespan shutdown с wait=True —
+│   │         uvicorn после lifespan переподнимает SIGTERM и умирает без atexit
+│   └── pdf_render_worker.py        # Процесс-воркер: только stdlib + fitz (без config/logging_config)
+│       ├── page_count()                - число страниц
+│       ├── render_page()               - рендер страницы → PNG tmp + os.replace
+│       └── ignore_stop_signals()       - SIGTERM/SIGINT получает только родитель
 │
 ├── cache/
 │   ├── cache_prepare_service.py    # Точки входа
@@ -381,7 +393,8 @@ js/png-viewer.js                    # Прогрессивный показ
       сбой готового PNG (429/сеть) → до IMAGE_RETRY_MAX (3) повторов через 3 сек, только на экране
 │
 config/media.py                     # Параметры
-└── PDF_TO_PNG_*                    - 4 параметра конфигурации
+├── PDF_TO_PNG_*                    - 4 параметра конфигурации
+└── PDF_RENDER_WORKERS              - число процессов-воркеров рендера (1)
 ```
 
 ## Troubleshooting
@@ -400,6 +413,14 @@ config/media.py                     # Параметры
 - **`PDF page wait`, `converting` — свой PDF, `done` не растёт** → подготовка или докрутка оборвалась (рестарт `tlibapp`, отгрузка), `_prepare.json` и lock остались. → Правка не нужна: через `CACHE_STALE_LOCK_TIMEOUT_MINUTES` (5 мин) `_prepare.json` считается устаревшим, и следующая докрутка его очищает.
 - **`PDF page wait` с пустым `converting` дольше пары опросов, без 429** → докрутка ставится, но выходит, не начав. Гистерезис эту строку не вызывает: окно проверки начинается с `want`, и отсутствующая страница `want` всегда запускает докрутку. Смотреть в папке архива: `_prepare.json` без `converting_path` — идёт распаковка при подготовке, ждать; `_prepare.lockdir` без `_prepare.json` — осиротевший lock после рестарта: снимается сам при следующей докрутке, когда lockdir старше `CACHE_STALE_LOCK_TIMEOUT_MINUTES` (5 мин), в `critical.log` — `Orphaned cache lock removed` (WARNING в `app.log` не попадает); до этого — ждать; запись PDF в `_meta.json` не `partial` или источника нет в `data/` — рендерить не из чего.
 - **Много `PDF conversion resumed` с `rendered` 1–3** → докрутка дорогая на страницу (lock, `ensure_cache_space`, перераспаковка из ZIP). При чтении подряд `rendered` — около N/2: докрутка стартует, когда впереди готово меньше N/2 страниц, и дорисовывает окно до N. Дыры позади `want` после прыжка дозаполняются тем же запуском, пока документ открыт. Мелкие запуски — конец документа и дырки, оставшиеся после ухода зрителя, это норма. Цена запуска — `extract_ms` этой строки против `render_ms` строки `PDF conversion run` того же запуска: если перераспаковка сравнима с рендером, держать распакованный PDF, пока документ недорисован. Если мелких запусков много при обычном листании → докручивать реже: уменьшить порог гистерезиса `PDF_CONVERT_LOOKAHEAD_PAGES // 2` в `resume_pdf_conversion` (докрутка стартует позже и рендерит больше за запуск) или увеличить `PDF_CONVERT_LOOKAHEAD_PAGES`.
+
+### Процесс-воркер рендера
+
+Рендер страниц идёт в отдельном процессе: PyMuPDF держит GIL весь рендер страницы, и в потоке главного процесса запросы (поиск, `/pages`, PNG) ждали бы конца окна рендера.
+
+- **Дочерний процесс `python … spawn_main` в `ps`** → это воркер рендера; появляется с первым рендером после рестарта, вместе с ним — `python … resource_tracker` (служебный процесс multiprocessing, несколько МБ). После отгрузки посмотреть память воркера: `ps -o pid,rss,cmd --ppid <pid uvicorn>`. Норма — десятки МБ плюс store-кэш MuPDF (до 256 МБ). Если RSS растёт от рендера к рендеру → пересоздавать воркер через N задач: `max_tasks_per_child` у `ProcessPoolExecutor` в `_get_pool()` (Python ≥ 3.11).
+- **`PDF render worker died (BrokenProcessPool), pool reset` в `critical.log`** → воркер умер посреди запуска (segfault MuPDF на странице `page`, OOM killer). Запуск завершился ошибкой (`Error converting PDF to directory` рядом), сервер жив, следующий рендер создаёт воркер заново. Повторяется на том же `pdf` и `page` → PDF роняет MuPDF: проверить файл отдельно (`python -c "import fitz; fitz.open('<pdf>')[<page-1>].get_pixmap()"`). Разные PDF → искать OOM killer в `journalctl -k`.
+- **Рестарт `tlibapp` посреди рендера** → не ошибка: systemd шлёт SIGTERM всем процессам сервиса, воркер его игнорирует (`ignore_stop_signals`) и дорисовывает окно, пока uvicorn ждёт фоновые задачи. Не уложились в `TimeoutStopSec` — SIGKILL всем процессам, запуск обрывается, как и до воркера (см. «`done` не растёт» выше). `BrokenProcessPool` рядом с рестартом — воркер убили отдельно от uvicorn (OOM killer, ручной `kill`). `State 'stop-sigterm' timed out` и `Killing process` в `journalctl -u tlibapp` при рестарте в простое → воркер пережил родителя: проверить `wait=True` в `shutdown_render_pool()`.
 
 ### PyMuPDF не установлен
 
@@ -437,5 +458,5 @@ pip install pymupdf
 
 - Максимальный размер PDF ограничен `MAX_FILE_SIZE` (2 GB)
 - PNG директории участвуют в общем лимите `MAX_CACHE_SIZE` (50 GB)
-- Конвертация выполняется последовательно в thread pool — одна страница за раз
+- Рендер идёт в одном процессе-воркере (`PDF_RENDER_WORKERS = 1`) — одна страница за раз; страницы PDF, которые рендерятся одновременно, чередуются
 - При ошибке конвертации основной запрос не блокируется

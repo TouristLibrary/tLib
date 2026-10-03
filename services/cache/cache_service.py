@@ -1,4 +1,4 @@
-# Version 2.2 - 26.09.2026 12:22:10 GMT
+# Version 2.3 - 03.10.2026 09:36:10 GMT
 # Cache Service для TlibWebApp
 # Описание: Централизованный сервис кеширования без версионных хешей.
 #           Предоставляет единую логику путей и очистки LRU по целым папкам архивов.
@@ -7,10 +7,14 @@
 #      и окну рендера в cache_watch (без отложенного циклического импорта).
 # 2.2: ensure_cache_space вызывается в конце запуска с фактическим размером своей папки;
 #      в «Cache cleanup needed» он подписан own, а не required.
+# 2.3: ensure_cache_space вызывается из thread pool, а не в цикле событий: вызовы сериализуются
+#      lock'ом (два запуска, закончившиеся разом, вытеснили бы лишнюю папку), а lock подготовки
+#      перепроверяется перед rmtree — папку могли взять в работу после обхода.
 
 import os
 import json
 import shutil
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -179,6 +183,11 @@ def is_cache_valid(archive_name: str, source_path: Path) -> bool:
 # LRU ОЧИСТКА КЕША
 # ============================================================================
 
+# Вытеснение идёт в thread pool: без lock два запуска, закончившиеся разом, обошли бы кеш
+# по одному снимку и удалили бы по папке каждый
+_cleanup_lock = threading.Lock()
+
+
 def ensure_cache_space(required_size: int) -> None:
     """
     Освобождает место в кеше, если своя папка вместе с чужими превышает лимит.
@@ -194,6 +203,12 @@ def ensure_cache_space(required_size: int) -> None:
         required_size: размер собственной папки вызывающего (cache_size_bytes, в байтах).
             Папка в момент вызова под lock и в обход не входит — иначе считалась бы дважды
     """
+    with _cleanup_lock:
+        _evict_lru(required_size)
+
+
+def _evict_lru(required_size: int) -> None:
+    """Тело ensure_cache_space: обход папок и удаление LRU (вызывается под _cleanup_lock)."""
     cache_dir = Path(CACHE_DIRECTORY)
     
     # Создаем директорию если её нет
@@ -261,6 +276,10 @@ def ensure_cache_space(required_size: int) -> None:
         # Проверяем достигли ли цели
         if total_size + required_size <= MAX_CACHE_SIZE:
             break
+
+        # Папку могли взять под lock после обхода: вытеснение идёт параллельно циклу событий
+        if (folder_path / CACHE_LOCK_DIRNAME).exists():
+            continue
         
         try:
             shutil.rmtree(folder_path)

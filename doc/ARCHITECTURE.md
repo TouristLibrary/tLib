@@ -111,7 +111,8 @@ TlibWebApp/
 │   ├── file_watcher/       # Обработка загрузок (+ notify: письма по факту публикации)
 │   ├── cache/              # Управление кешем (LRU, подготовка, pipeline); cache_watch — heartbeat
 │   │                       #   просмотра PNG (_watch.json): PDF→PNG конвертируется, пока смотрят (PDF_TO_PNG.md)
-│   ├── conversion/         # Конвертация медиа (изображения, PDF→PNG)
+│   ├── conversion/         # Конвертация медиа (изображения, PDF→PNG); рендер PDF — в процессе-воркере
+│   │                       #   pdf_render_worker (spawn): PyMuPDF держит GIL, в потоке он морил бы цикл событий
 │   ├── seo/                # SEO: parse_report_query, fetch_report_row, build_canonical_query,
 │   │                       #       build_title/description, render_homepage_html/render_report_html
 │   └── validation/         # Валидация данных (кодировка, JSON Schema)
