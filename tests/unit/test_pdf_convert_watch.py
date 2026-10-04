@@ -1,4 +1,4 @@
-# Version 2.3 - 01.10.2026 15:14:33 GMT
+# Version 2.4 - 04.10.2026 06:47:06 GMT
 # Тесты рендера PDF по окну просмотра (services/conversion/pdf_to_png_service.py,
 # services/cache/cache_watch.first_missing_in_window, cache_prepare_service.resume_pdf_conversion)
 # Описание: Без свежего heartbeat конвертер рендерит только первые K страниц (прогрев), со свежим —
@@ -16,6 +16,7 @@
 #      повторная подготовка валидного кеша и холостая докрутка место не освобождают.
 # 2.2: окно от want дозаполняет страницы позади (порядок от ближайшей, остановка по stale heartbeat).
 # 2.3: порог дозаполнения BACKFILL_FRESH короче окна свежести; докрутка дозаполняет дырку позади want.
+# 2.4: соседи want вперемешку с обеих сторон (NEAR_PAGES пар); NEAR_PAGES=0 — прежний порядок.
 
 import asyncio
 import json
@@ -156,6 +157,30 @@ def test_backfill_behind_want_nearest_first(tmp_path, pdf_path, window, monkeypa
     result = _convert_pdf_to_directory_sync(pdf_path, out_dir, STEM, _CONFIG)
 
     assert _render_order(snapshots) == [[5], [6], [4], [3], [2], [1]]
+    assert result == (PAGES, PAGES, PAGES, True)
+
+
+@pytest.mark.parametrize("near, expected", [
+    (3, [[3], [4], [2], [5], [1], [6]]),
+    (0, [[3], [4], [5], [6], [2], [1]]),
+], ids=["interleaved", "near_off"])
+def test_near_pages_interleaved_around_want(tmp_path, pdf_path, window, monkeypatch, near, expected):
+    """Свежий heartbeat — после want соседи вперемешку: want+1, want-1, want+2, …;
+    NEAR_PAGES=0 — прежний порядок: всё окно вперёд, затем позади."""
+    window(2, 6)
+    monkeypatch.setattr(cache_watch_module, "PDF_CONVERT_NEAR_PAGES", near)
+    out_dir = tmp_path / f"{STEM}-png"
+    snapshots = []
+
+    def viewer(_dir):
+        snapshots.append(_ready_pages(out_dir))
+        return time.time(), 3
+
+    monkeypatch.setattr(cache_watch_module, "read_watch", viewer)
+
+    result = _convert_pdf_to_directory_sync(pdf_path, out_dir, STEM, _CONFIG)
+
+    assert _render_order(snapshots) == expected
     assert result == (PAGES, PAGES, PAGES, True)
 
 

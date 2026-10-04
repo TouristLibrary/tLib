@@ -1,4 +1,4 @@
-# Version 1.6 - 01.10.2026 15:14:33 GMT
+# Version 1.7 - 04.10.2026 06:44:24 GMT
 # Конфигурация кеша TlibWebApp
 # Описание: Имена файлов и директорий кеша, статусы, стадии подготовки,
 #           таймауты и параметры LRU-очистки.
@@ -11,6 +11,8 @@
 #      по фактическому размеру папки после записи _meta.json, а не по оценке.
 # 1.5: комментарии к heartbeat и окну — опрос раз в 1–2 с, дозаполнение позади want (значения прежние).
 # 1.6: PDF_CONVERT_BACKFILL_FRESH_SECONDS — дозаполнение позади want только при свежем (≤ 5 с) heartbeat.
+# 1.7: long-poll /pages — PNG_PAGES_WAIT_SECONDS, PNG_PAGES_WAIT_STEP_SECONDS; соседи want рендерятся
+#      вперемешку с обеих сторон — PDF_CONVERT_NEAR_PAGES.
 
 # ==================== ФАЙЛЫ И ДИРЕКТОРИИ КЕША ====================
 
@@ -31,7 +33,7 @@ CACHE_PREPARE_STATUS_FILENAME: str = "_prepare.json"
 CACHE_LOCK_DIRNAME: str = "_prepare.lockdir"
 
 # Heartbeat просмотра в PNG-директории: {"ts": unix-время, "want": страница 1-based | null}.
-# Пишет GET /api/png/.../pages (png-viewer опрашивает его раз в 1–2 с),
+# Пишет GET /api/png/.../pages (png-viewer опрашивает его, пока на диске не все страницы),
 # читает конвертер PDF→PNG между страницами (services/cache/cache_watch.py)
 PNG_WATCH_FILENAME: str = "_watch.json"
 
@@ -84,6 +86,20 @@ PDF_CONVERT_LOOKAHEAD_PAGES: int = 20
 # а не все 20 с IDLE_TIMEOUT. Фоновая вкладка с сильным троттлингом таймеров (после 5 минут скрытия)
 # под порог не попадает — и это нормально: там не читают
 PDF_CONVERT_BACKFILL_FRESH_SECONDS: int = 5
+
+# Соседи want при свежем (≤ PDF_CONVERT_BACKFILL_FRESH_SECONDS) heartbeat рендерятся вперемешку:
+# want, want+1, want-1, want+2, want-2 … — столько пар, затем остаток окна вперёд и страницы позади.
+# Читатель, открывший deep-link на середину, чаще листает на шаг назад, чем на 20 вперёд.
+# 0 — прежний порядок: всё окно вперёд, потом назад
+PDF_CONVERT_NEAR_PAGES: int = 3
+
+# Long-poll GET /api/png/.../pages: страницы want нет на диске частичной директории — запрос ждёт
+# её появления не дольше стольких секунд и отвечает сразу, как файл появился. Читатель видит
+# страницу в момент рендера, а не на следующем опросе. 0 — ответ без ожидания (прежнее поведение)
+PNG_PAGES_WAIT_SECONDS: float = 1.5
+
+# Шаг проверки файла страницы при long-poll /pages (секунды): задержка показа сверх рендера
+PNG_PAGES_WAIT_STEP_SECONDS: float = 0.1
 
 
 # ==================== СТАТУСЫ КЕША ====================

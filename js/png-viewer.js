@@ -1,5 +1,10 @@
-// Version 3.6 - 01.10.2026 15:01:09 GMT
+// Version 3.8 - 04.10.2026 07:25:00 GMT
 // PNG Viewer - ESM модуль для просмотра PNG страниц
+// 3.8: прыжок на неготовую страницу обрывает висящий long-poll со старым want (AbortController)
+//   и сразу ставит опрос с новым; AbortError не ждёт 2 с. MIN_GAP 500 мс прежний
+// 3.7: /pages — long-poll: пока страницы want нет, сервер сам держит запрос (до 1,5 с) и отвечает,
+//   как только PNG появился. Пауза клиента между неудачными ожиданиями — PAGES_POLL_WAITING_MS 300 мс
+//   вместо 1000: ждать на клиенте больше нечего. Логика опроса и MIN_GAP прежние
 // 3.6: единый планировщик опроса /pages (_schedulePoll): один таймер, один запрос в полёте.
 //   Текущей страницы нет на диске — опрос раз в PAGES_POLL_WAITING_MS, иначе раз в PAGES_POLL_IDLE_MS;
 //   переход или скролл на неготовую страницу — опрос сразу (не чаще PAGES_POLL_MIN_GAP_MS), чтобы
@@ -23,8 +28,9 @@
 // API ENDPOINTS (настраиваются через options.apiBase):
 // - GET {apiBase}/{path}/pages?want=N - список страниц в директории. Запрос — heartbeat
 //   просмотра: сервер конвертирует PDF, только пока вьюер опрашивает /pages, и первой
-//   рендерит страницу want (1-based), которую сейчас показывает вьюер, затем окно впереди
-//   и страницы позади неё
+//   рендерит страницу want (1-based), которую сейчас показывает вьюер, затем соседей с обеих
+//   сторон, окно впереди и страницы позади неё. Пока PNG want нет на диске, сервер держит
+//   запрос до 1,5 с (long-poll) и отвечает, как только страница готова
 //
 // СВЯЗЬ С PDF_TO_PNG_SERVICE:
 // - PNG директории создаются автоматически при кешировании PDF
@@ -57,7 +63,9 @@ const CONFIG = {
 
     // Опрос /pages, пока на диске не все PNG. Лимит API — 300 запросов в минуту на IP, за NAT
     // его делят несколько читателей, а 429 на /pages гасит heartbeat — поэтому не чаще.
-    PAGES_POLL_WAITING_MS: 1000,        // Текущей страницы нет на диске — читатель ждёт её (мс)
+    // Текущей страницы нет на диске — читатель ждёт её (мс). Сервер сам держит запрос до появления
+    // PNG (long-poll, до 1,5 с), поэтому пауза между запросами короткая: ~1 запрос в 1,8 с
+    PAGES_POLL_WAITING_MS: 300,
     PAGES_POLL_IDLE_MS: 2000,           // Текущая страница готова; также после сбоя запроса (мс)
     PAGES_POLL_MIN_GAP_MS: 500,         // Между запросами: листание по неготовым страницам (мс)
 };
@@ -86,7 +94,7 @@ class PngViewer {
         this.diskPageNames = new Set(); // Имена PNG, уже найденных на диске (опрос во время конвертации)
         this.pollTimer = null;          // Единственный таймер опроса /pages (_schedulePoll)
         this.pollInFlight = false;      // Запрос /pages в полёте — второй параллельно не шлём
-        this.pollAgain = false;         // Страница сменилась во время запроса — опросить сразу после ответа
+        this.pollController = null;     // AbortController висящего /pages — прыжок обрывает старый want
         this.lastPagesAt = 0;           // Время последнего запроса /pages (мс)
         this.lastPagesWant = null;      // want последнего запроса /pages — сервер его уже знает
 
@@ -279,8 +287,8 @@ class PngViewer {
         if (!this._isPolling() || !page || this.diskPageNames.has(page.name)) return;
         if (this.currentPage + 1 === this.lastPagesWant) return;
         if (this.pollInFlight) {
-            // Ответ придёт со старым want — следующий опрос сразу после него
-            this.pollAgain = true;
+            // Висящий long-poll держит старый want до 1,5 с — обрываем, новый уйдёт из catch
+            this.pollController?.abort();
         } else {
             this._schedulePoll(0);
         }
@@ -299,13 +307,16 @@ class PngViewer {
         if (!knownTotal) return;
 
         this.pollInFlight = true;
-        this.pollAgain = false;
         this.lastPagesAt = Date.now();
         this.lastPagesWant = this.currentPage + 1;
-        // Сбой (429, рестарт сервера) — повтор в прежнем темпе, без учащения; null — опрос окончен
+        this.pollController = new AbortController();
+        // Сбой (429, рестарт сервера) — повтор в прежнем темпе, без учащения; null — опрос окончен.
+        // AbortError — прыжок на другую страницу: новый want сразу (MIN_GAP ограничивает частоту)
         let nextDelay = CONFIG.PAGES_POLL_IDLE_MS;
         try {
-            const response = await fetch(this._pagesUrl(this.directory, this.lastPagesWant));
+            const response = await fetch(this._pagesUrl(this.directory, this.lastPagesWant), {
+                signal: this.pollController.signal,
+            });
             if (!response.ok) return;
             const data = await response.json();
             const diskPages = data.pages || [];
@@ -334,12 +345,14 @@ class PngViewer {
             if (diskPages.length >= knownTotal) {
                 nextDelay = null;
             } else {
-                nextDelay = this.pollAgain ? 0 : this._pollDelay();
+                nextDelay = this._pollDelay();
             }
-        } catch {
-            // сбой сети — nextDelay остаётся прежним темпом
+        } catch (error) {
+            if (error?.name === 'AbortError') nextDelay = 0;
+            // иначе сбой сети — nextDelay остаётся прежним темпом
         } finally {
             this.pollInFlight = false;
+            this.pollController = null;
             if (nextDelay !== null) this._schedulePoll(nextDelay);
         }
     }

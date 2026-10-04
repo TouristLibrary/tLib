@@ -1,4 +1,4 @@
-# Version 1.9 - 30.09.2026 15:29:26 GMT
+# Version 2.1 - 04.10.2026 07:25:00 GMT
 # Тесты безопасности путей cache_router и png_viewer_router (этап 4)
 # Описание: Проверяет, что traverse-векторы в archive_name, body.path и dir_path
 #           корректно отклоняются (400), а легитимные пути работают (не 400/500).
@@ -17,12 +17,17 @@
 #      только /pages (spy resume_pdf_conversion — только в png_viewer_router).
 # 1.8: /prepare?probe=1 отдаёт pages и для PDF на паузе — вьюер открывается без жеста.
 # 1.9: /pages пишет «PDF page wait», только пока страницы want нет на диске.
+# 2.0: long-poll /pages — ответ, как только PNG want появился, или по PNG_PAGES_WAIT_SECONDS;
+#      «PDF page wait» с waited_ms и ready; готовая директория и готовая want — без ожидания.
+# 2.1: test_pages_on_partial_dir_resumes_conversion без long-poll (WAIT=0) — проверяет докрутку, не ожидание.
 
 from __future__ import annotations
 
 import json
 import logging
 import os
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -354,7 +359,8 @@ def _make_partial_cache(data_dir: Path, cache_dir: Path, archive_name: str) -> P
 def resume_calls(monkeypatch) -> list[tuple]:
     """Spy на resume_pdf_conversion в png_viewer_router — единственном триггере докрутки.
 
-    TestClient выполняет BackgroundTasks синхронно после ответа — вызов виден сразу.
+    Роутер ставит докрутку через create_task и отдаёт ей управление sleep(0) — вызов
+    фиксируется до ответа.
     """
     calls: list[tuple] = []
 
@@ -363,6 +369,11 @@ def resume_calls(monkeypatch) -> list[tuple]:
 
     monkeypatch.setattr(png_viewer_router_module, "resume_pdf_conversion", spy)
     return calls
+
+
+def _page_waits(caplog) -> list[dict]:
+    """Поля строк «PDF page wait» — по одной на запрос, в котором читатель ждал страницу."""
+    return [r.extra_data for r in caplog.records if r.getMessage() == "PDF page wait"]
 
 
 class TestConvertWhileWatching:
@@ -392,7 +403,9 @@ class TestConvertWhileWatching:
         assert resp.status_code == 200, resp.text
         assert json.loads((png_dir / "_watch.json").read_text(encoding="utf-8"))["want"] is None
 
-    def test_pages_on_partial_dir_resumes_conversion(self, app_client, tmp_dirs, resume_calls):
+    def test_pages_on_partial_dir_resumes_conversion(self, app_client, tmp_dirs, resume_calls, monkeypatch):
+        """Докрутка ставится; long-poll здесь не проверяется — заглушка так и не появится."""
+        monkeypatch.setattr(png_viewer_router_module, "PNG_PAGES_WAIT_SECONDS", 0)
         _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
         resp = app_client.get("/api/png/00001-TST/dir1/report-png/pages?want=2")
         assert resp.status_code == 200, resp.text
@@ -417,28 +430,92 @@ class TestConvertWhileWatching:
         assert resp.status_code == 200, resp.text
         assert resume_calls == []
 
-    def test_pages_logs_page_wait_while_want_missing(self, app_client, tmp_dirs, resume_calls, caplog):
+    def test_pages_logs_page_wait_while_want_missing(self, app_client, tmp_dirs, resume_calls, caplog,
+                                                     monkeypatch):
         """«PDF page wait» — читатель видит заглушку want; converting — PDF, который рендерится сейчас.
-        Страница готова — строки нет."""
+        Страница готова — строки нет. Без long-poll (WAIT=0) ответ сразу, ready=False."""
+        monkeypatch.setattr(png_viewer_router_module, "PNG_PAGES_WAIT_SECONDS", 0)
         png_dir = _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
         prepare = {"status": "preparing", "stage": "converting", "converting_path": "dir1/other.pdf",
                    "updated_at": datetime.now(timezone.utc).isoformat()}
         (tmp_dirs["cache"] / "00001-TST" / "_prepare.json").write_text(json.dumps(prepare), encoding="utf-8")
         caplog.set_level(logging.INFO, logger="tlibwebapp")
 
-        def waits():
-            return [r.extra_data for r in caplog.records if r.getMessage() == "PDF page wait"]
-
         resp = app_client.get("/api/png/00001-TST/dir1/report-png/pages?want=2")
         assert resp.status_code == 200, resp.text
-        assert waits() == [{"archive": "00001-TST", "png_dir": "dir1/report-png", "want": 2,
-                            "done": 1, "total": 3, "converting": "dir1/other.pdf"}]
+        (wait,) = _page_waits(caplog)
+        assert wait.pop("waited_ms") < 100
+        assert wait == {"archive": "00001-TST", "png_dir": "dir1/report-png", "want": 2,
+                        "done": 1, "total": 3, "converting": "dir1/other.pdf", "ready": False}
 
         caplog.clear()
         (png_dir / "report_0002.png").write_bytes(b"\x89PNG")
         resp = app_client.get("/api/png/00001-TST/dir1/report-png/pages?want=2")
         assert resp.status_code == 200, resp.text
-        assert waits() == []
+        assert _page_waits(caplog) == []
+
+    def test_pages_waits_for_want_page(self, app_client, tmp_dirs, resume_calls, caplog, monkeypatch):
+        """Long-poll: PNG want появляется во время запроса — ответ сразу с ним, не по таймауту."""
+        monkeypatch.setattr(png_viewer_router_module, "PNG_PAGES_WAIT_SECONDS", 5.0)
+        png_dir = _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
+        caplog.set_level(logging.INFO, logger="tlibwebapp")
+        render = threading.Timer(0.2, (png_dir / "report_0002.png").write_bytes, args=(b"\x89PNG",))
+
+        started = time.perf_counter()
+        render.start()
+        try:
+            resp = app_client.get("/api/png/00001-TST/dir1/report-png/pages?want=2")
+        finally:
+            render.cancel()
+        elapsed = time.perf_counter() - started
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert [p["name"] for p in data["pages"]] == ["report_0001.png", "report_0002.png"]
+        assert 0.2 <= elapsed < 5.0
+        assert resume_calls == [("00001-TST", "dir1/report-png")]
+        (wait,) = _page_waits(caplog)
+        assert (wait["ready"], wait["done"]) == (True, 2)
+        assert 0 < wait["waited_ms"] < 5000
+
+    def test_pages_wait_times_out(self, app_client, tmp_dirs, resume_calls, caplog, monkeypatch):
+        """Страница за PNG_PAGES_WAIT_SECONDS не появилась — ответ без неё, ready=False."""
+        monkeypatch.setattr(png_viewer_router_module, "PNG_PAGES_WAIT_SECONDS", 0.3)
+        _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
+        caplog.set_level(logging.INFO, logger="tlibwebapp")
+
+        started = time.perf_counter()
+        resp = app_client.get("/api/png/00001-TST/dir1/report-png/pages?want=2")
+        elapsed = time.perf_counter() - started
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["total"] == 1
+        assert 0.3 <= elapsed < 1.0
+        (wait,) = _page_waits(caplog)
+        assert wait["ready"] is False
+        assert wait["waited_ms"] >= 300
+
+    @pytest.mark.parametrize("case", ["complete_dir", "want_ready"])
+    def test_pages_complete_dir_no_wait(self, app_client, tmp_dirs, resume_calls, caplog, monkeypatch, case):
+        """Готовая директория или готовая страница want — ответ без ожидания, быстрее шага."""
+        monkeypatch.setattr(png_viewer_router_module, "PNG_PAGES_WAIT_SECONDS", 5.0)
+        monkeypatch.setattr(png_viewer_router_module, "PNG_PAGES_WAIT_STEP_SECONDS", 1.0)
+        if case == "complete_dir":
+            png_dir = _make_png_dir(tmp_dirs["cache"], "00001-TST", "report-png")
+            (png_dir / "_pages_total.txt").write_text("2")
+            url = "/api/png/00001-TST/report-png/pages?want=2"
+        else:
+            _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
+            url = "/api/png/00001-TST/dir1/report-png/pages?want=1"
+        caplog.set_level(logging.INFO, logger="tlibwebapp")
+
+        started = time.perf_counter()
+        resp = app_client.get(url)
+        elapsed = time.perf_counter() - started
+
+        assert resp.status_code == 200, resp.text
+        assert elapsed < 1.0
+        assert _page_waits(caplog) == []
 
     def test_probe_returns_pages_of_partial_pdf(self, app_client, tmp_dirs):
         """PDF на паузе отдаётся с полным числом страниц: вьюер открывается сразу, без жеста,

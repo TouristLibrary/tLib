@@ -1,10 +1,11 @@
-# Version 1.6 - 01.10.2026 15:14:33 GMT
+# Version 1.7 - 04.10.2026 06:44:42 GMT
 # Cache Watch для TlibWebApp
 # Описание: Heartbeat просмотра PNG-директории и её частичное состояние.
-#           png-viewer опрашивает /api/png/.../pages раз в 1–2 с — роутер отмечает это в _watch.json
-#           (время и страница, которую показывает вьюер). Конвертер PDF→PNG читает heartbeat
-#           между страницами и рендерит окно вокруг просматриваемой страницы, затем страницы
-#           позади неё (first_missing_in_window); рендерить нечего или зритель ушёл — пауза.
+#           png-viewer опрашивает /api/png/.../pages, пока на диске не все страницы, — роутер отмечает
+#           это в _watch.json (время и страница, которую показывает вьюер). Конвертер PDF→PNG читает
+#           heartbeat между страницами и рендерит want, её соседей с обеих сторон, остаток окна
+#           вперёд, затем страницы позади (first_missing_in_window); рендерить нечего или зритель
+#           ушёл — пауза.
 #           Два порога свежести: окно вперёд — PDF_CONVERT_IDLE_TIMEOUT_SECONDS (20 с), дозаполнение
 #           позади — PDF_CONVERT_BACKFILL_FRESH_SECONDS (5 с), чтобы ушедший бот не рисовал назад 20 с.
 #           Частичная директория (PNG меньше, чем в _pages_total.txt) докручивается при следующем просмотре.
@@ -19,6 +20,9 @@
 # 1.6: дозаполнение позади want — только при heartbeat не старше PDF_CONVERT_BACKFILL_FRESH_SECONDS:
 #      бот по deep-link уходит через ~5 с, а с порогом 20 с конвертер рисовал бы назад ещё ~15 с
 #      (до 40–50 лишних страниц на визит).
+# 1.7: при свежем для дозаполнения heartbeat соседи want идут вперемешку — want+1, want-1, … на
+#      PDF_CONVERT_NEAR_PAGES пар, затем остаток окна вперёд и страницы позади. Набор страниц прежний,
+#      меняется только порядок, поэтому гистерезис докрутки не затронут.
 
 import os
 import time
@@ -33,6 +37,7 @@ from config import (
     PDF_CONVERT_IDLE_TIMEOUT_SECONDS,
     PDF_CONVERT_PREWARM_PAGES,
     PDF_CONVERT_BACKFILL_FRESH_SECONDS,
+    PDF_CONVERT_NEAR_PAGES,
 )
 
 # Импорт логгеров
@@ -118,11 +123,14 @@ def first_missing_in_window(png_dir: Path, pdf_stem: str, page_count: int, looka
     """
     Следующая страница для рендера — общее правило конвертера и докрутки.
     Свежий heartbeat (не старше PDF_CONVERT_IDLE_TIMEOUT_SECONDS) со страницей want в пределах
-    документа: сначала окно [want-1, want-1+lookahead), когда оно готово и heartbeat не старше
-    PDF_CONVERT_BACKFILL_FRESH_SECONDS — ближайшая недостающая позади want (want-2 … 0). Иначе
-    читатель, прыгнувший вперёд и вернувшийся назад, снова ждал бы рендера пропущенных страниц.
+    документа: окно [want-1, want-1+lookahead). Если heartbeat не старше
+    PDF_CONVERT_BACKFILL_FRESH_SECONDS, к окну добавляются страницы позади want, а соседи want идут
+    вперемешку: want, want+1, want-1, want+2, want-2 … (PDF_CONVERT_NEAR_PAGES пар), затем остаток
+    окна вперёд, затем позади от ближайшей к началу. Иначе читатель, прыгнувший вперёд и вернувшийся
+    назад, снова ждал бы рендера пропущенных страниц, а шаг назад от deep-link ждал бы всё окно.
     Порог дозаполнения короче: читатель опрашивает /pages раз в 2 с и под него попадает всегда,
-    а бот, ушедший с deep-link, не рисует назад все 20 с окна свежести — только до 5 с.
+    а бот, ушедший с deep-link, не рисует назад все 20 с окна свежести — только до 5 с;
+    дальше — только окно вперёд от want, без соседей позади.
     Зрителя нет — окно прогрева, первые PDF_CONVERT_PREWARM_PAGES страниц.
 
     Args:
@@ -139,9 +147,13 @@ def first_missing_in_window(png_dir: Path, pdf_stem: str, page_count: int, looka
     age = time.time() - ts
     if age <= PDF_CONVERT_IDLE_TIMEOUT_SECONDS and want is not None and want <= page_count:
         start = want - 1
-        order = range(start, min(start + lookahead, page_count))
+        end = min(start + lookahead, page_count)
         if age <= PDF_CONVERT_BACKFILL_FRESH_SECONDS:
-            order = chain(order, range(start - 1, -1, -1))
+            near = PDF_CONVERT_NEAR_PAGES
+            pairs = (i for d in range(1, near + 1) for i in (start + d, start - d) if 0 <= i < end)
+            order = chain((start,), pairs, range(start + near + 1, end), range(start - near - 1, -1, -1))
+        else:
+            order = range(start, end)
     else:
         order = range(min(PDF_CONVERT_PREWARM_PAGES, page_count))
     for i in order:

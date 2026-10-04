@@ -1,8 +1,12 @@
-# Version 2.7 - 01.10.2026 15:04:12 GMT
+# Version 2.8 - 04.10.2026 06:45:09 GMT
 # PNG Viewer Router для TlibWebApp
 # Описание: API endpoints для PNG viewer. Предоставляет листинг PNG директорий в data.cache
 #           и списки PNG файлов для просмотра. Используется embedded-вьюером /png-viewer.
 #           Логика resolve переехала в единый cache_router POST /resolve.
+# 2.8: long-poll /pages — страницы want нет на диске частичной директории: запрос ждёт её до
+#      PNG_PAGES_WAIT_SECONDS и отвечает, как только файл появился. Докрутка стартует до ожидания
+#      (asyncio.create_task), а не после ответа (BackgroundTasks). «PDF page wait» — одна строка
+#      на запрос с waited_ms и ready.
 # 2.7: docstring /pages — темп опроса 1–2 с и дозаполнение страниц позади want (код не менялся).
 # 2.6: INFO «PDF page wait» — страницы want нет на диске частичной директории, читатель видит заглушку;
 #      converting (PDF, который сейчас рендерится) показывает причину ожидания.
@@ -17,18 +21,26 @@
 #      _is_safe_dirname и ручная startswith-проверка удалены;
 #      _list_png_files использует .resolve() базы для корректного relative_to.
 
+import asyncio
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
-from fastapi import APIRouter, BackgroundTasks, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 # Импорт конфигурации
-from config import CACHE_DIRECTORY, CACHE_URL_PATH, CACHE_META_FILENAME
+from config import (
+    CACHE_DIRECTORY,
+    CACHE_URL_PATH,
+    CACHE_META_FILENAME,
+    PNG_PAGES_WAIT_SECONDS,
+    PNG_PAGES_WAIT_STEP_SECONDS,
+)
 
 # Импорт сервисов кеша: heartbeat просмотра и докрутка частичной конвертации
-from services.cache.cache_watch import touch_watch, read_pages_total, is_partial
+from services.cache.cache_watch import touch_watch, read_pages_total, is_partial, count_pngs
 from services.cache.cache_prepare_service import is_preparing, read_prepare_status, resume_pdf_conversion
 from services.cache.cache_service import generate_png_filename
 
@@ -43,6 +55,10 @@ from logging_config import app_logger, log_with_data
 
 # Создаем роутер
 router = APIRouter(prefix="/api/png", tags=["png-viewer"])
+
+# Запущенные из /pages докрутки: event loop держит на задачи только слабые ссылки, без сильной
+# задачу мог бы собрать GC посреди рендера. Исключения resume_pdf_conversion ловит сама
+_resume_tasks: set[asyncio.Task] = set()
 
 
 def _scan_png_directories() -> list[dict]:
@@ -179,7 +195,6 @@ async def get_directories(request: Request):
 async def get_pages(
     dir_path: str,
     request: Request,
-    background_tasks: BackgroundTasks,
     want: Optional[int] = None,
 ):
     """
@@ -189,10 +204,12 @@ async def get_pages(
     Последний сегмент должен быть PNG-директорией (заканчивается на -png).
     Boundary проверка — через канонический validate_and_resolve_under_base() (§3).
 
-    Запрос — heartbeat просмотра: png-viewer опрашивает /pages раз в 1–2 с, пока страниц
-    на диске меньше pages_total. Конвертер рендерит окно страниц от want (первой — саму want),
-    затем страницы позади want; частичная конвертация на паузе возобновляется, когда впереди
-    от want готово меньше половины окна или позади want есть дырки (единственный триггер докрутки).
+    Запрос — heartbeat просмотра: png-viewer опрашивает /pages, пока страниц на диске меньше
+    pages_total. Конвертер рендерит want, её соседей с обеих сторон, остаток окна вперёд, затем
+    страницы позади want; частичная конвертация на паузе возобновляется сразу, до ответа, когда
+    впереди от want готово меньше половины окна или позади want есть дырки (единственный триггер
+    докрутки). Страницы want нет на диске частичной директории — long-poll: ответ, как только
+    файл появился, но не позже PNG_PAGES_WAIT_SECONDS.
 
     Args:
         dir_path: путь к директории (например: "12345-ABC/dir1/report-png")
@@ -251,23 +268,42 @@ async def get_pages(
         touch_watch(full_path, want if want is not None and want >= 1 else None, cache_root / archive_name)
         partial = is_partial(full_path)
         if partial and not is_preparing(archive_name):
-            background_tasks.add_task(resume_pdf_conversion, archive_name, png_dir_rel)
-
-        # Получаем список файлов (full_path resolved → _list_png_files использует resolved базу)
-        pages = _list_png_files(full_path)
+            # Докрутка стартует сейчас, а не после ответа: иначе рендер want начался бы на тик позже,
+            # а long-poll ниже ждал бы страницу, которую никто не рисует. sleep(0) отдаёт задаче
+            # управление до ожидания — она успевает решить, докручивать ли, и записать _prepare.json
+            task = asyncio.create_task(resume_pdf_conversion(archive_name, png_dir_rel))
+            _resume_tasks.add(task)
+            task.add_done_callback(_resume_tasks.discard)
+            await asyncio.sleep(0)
 
         # Маркер общего числа страниц (записывается pre-scan'ом)
         pages_total = read_pages_total(full_path)
 
-        # Читатель ждёт: вьюер показывает «Страница N подготавливается…». converting — PDF архива,
-        # который рендерится сейчас: этот же — ждём рендер, другой — конкуренция PDF одного архива,
-        # пусто — докрутка не идёт. _prepare.json читается, только пока страницы нет
+        # Читатель ждёт: вьюер показывает «Страница N подготавливается…». Long-poll: отвечаем, как
+        # только PNG want появился, — читатель видит страницу в момент рендера, а не на следующем
+        # опросе. converting — PDF архива, который рендерится к началу ожидания: этот же — ждём
+        # рендер, другой — конкуренция PDF одного архива, пусто — докрутка не идёт.
+        # _prepare.json читается, только пока страницы нет
         if partial and pages_total and want is not None and 1 <= want <= pages_total:
-            pdf_stem = full_path.name.removesuffix('-png')
-            if not (full_path / generate_png_filename(pdf_stem, want - 1)).exists():
+            want_png = full_path / generate_png_filename(full_path.name.removesuffix('-png'), want - 1)
+            if not want_png.exists():
+                converting = read_prepare_status(archive_name).get("converting_path", "")
+                started = time.perf_counter()
+                deadline = started + PNG_PAGES_WAIT_SECONDS
+                ready = False
+                while (left := deadline - time.perf_counter()) > 0:
+                    await asyncio.sleep(min(PNG_PAGES_WAIT_STEP_SECONDS, left))
+                    if want_png.exists():
+                        ready = True
+                        break
+                waited_ms = round((time.perf_counter() - started) * 1000)
+                # Листинг ниже собирается после ожидания — появившаяся страница попадёт в ответ
                 log_with_data(logging.INFO, "PDF page wait", archive=archive_name, png_dir=png_dir_rel,
-                              want=want, done=len(pages), total=pages_total,
-                              converting=read_prepare_status(archive_name).get("converting_path", ""))
+                              want=want, done=count_pngs(full_path), total=pages_total,
+                              converting=converting, waited_ms=waited_ms, ready=ready)
+
+        # Получаем список файлов (full_path resolved → _list_png_files использует resolved базу)
+        pages = _list_png_files(full_path)
 
         app_logger.debug(f"PNG pages listing: {dir_path} - {len(pages)} pages")
 
