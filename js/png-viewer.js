@@ -1,5 +1,8 @@
-// Version 3.8 - 04.10.2026 07:25:00 GMT
+// Version 3.9 - 05.10.2026 09:33:00 GMT
 // PNG Viewer - ESM модуль для просмотра PNG страниц
+// 3.9: заглушка страницы, до которой дошёл observer, — со спиннером (класс is-busy):
+//   «подготавливается», пока PNG нет на диске, «загружается» — пока готовый PNG скачивается;
+//   окончательный отказ («не удалось загрузить») без спиннера
 // 3.8: прыжок на неготовую страницу обрывает висящий long-poll со старым want (AbortController)
 //   и сразу ставит опрос с новым; AbortError не ждёт 2 с. MIN_GAP 500 мс прежний
 // 3.7: /pages — long-poll: пока страницы want нет, сервер сам держит запрос (до 1,5 с) и отвечает,
@@ -629,13 +632,17 @@ class PngViewer {
         const page = this.pages[pageIndex];
         if (!page) return;
 
+        // Заглушка уже на экране: спиннер (is-busy) показывает, что ожидание живое, а не зависание.
+        // Текст меняется через textContent, поэтому спиннер — ::before, а не дочерний элемент
+        const placeholder = container.querySelector('.page-placeholder');
+
         // PNG ещё нет в /pages — не запрашиваем: 404 по каждой видимой заглушке съедал бы
         // лимит запросов, и heartbeat /pages получал бы 429. Когда файл появится,
         // _pollNewPages перепроверит контейнер observer'ом.
         if (!this.diskPageNames.has(page.name)) {
-            const placeholder = container.querySelector('.page-placeholder');
             if (placeholder) {
                 placeholder.textContent = `Страница ${pageIndex + 1} подготавливается...`;
+                placeholder.classList.add('is-busy');
             }
             return;
         }
@@ -643,13 +650,18 @@ class PngViewer {
         // Mark as loading to prevent duplicate requests from IntersectionObserver
         this.loadedPages.add(pageIndex);
 
+        // Файл есть в /pages — этап сменился: рендер закончился, PNG скачивается
+        if (placeholder) {
+            placeholder.textContent = `Страница ${pageIndex + 1} загружается...`;
+            placeholder.classList.add('is-busy');
+        }
+
         const img = new Image();
         img.className = 'page-image';
         img.alt = `Страница ${pageIndex + 1}`;
 
         img.onload = () => {
             // Remove placeholder
-            const placeholder = container.querySelector('.page-placeholder');
             if (placeholder) {
                 placeholder.remove();
             }
@@ -672,10 +684,11 @@ class PngViewer {
             this.loadedPages.delete(pageIndex);
             const retryCount = (container._retryCount || 0) + 1;
             container._retryCount = retryCount;
-            const placeholder = container.querySelector('.page-placeholder');
             if (retryCount > CONFIG.IMAGE_RETRY_MAX) {
                 if (placeholder) {
                     placeholder.textContent = `Страница ${pageIndex + 1}: не удалось загрузить`;
+                    // Спиннер на окончательном отказе читался бы как «ещё грузится»
+                    placeholder.classList.remove('is-busy');
                 }
                 // Счётчик обнуляем: когда страница снова попадёт в зону viewport, observer
                 // запустит полный цикл попыток, а не одну без повтора
