@@ -1,4 +1,4 @@
-# Version 2.3 - 26.09.2026 11:49:27 GMT
+# Version 2.4 - 06.10.2026 11:23:54 GMT
 # Cache Pipeline для TlibWebApp
 # Описание: Конвертационные шаги подготовки кеша.
 #           Извлечение, конвертация PDF/изображений/GPS, запись meta.
@@ -11,6 +11,9 @@
 #      Результат конвертера — (pages_done, page_count, rendered, completed).
 # 2.3: cache_size_bytes не учитывает _work/, lockdir и _prepare.json — докрутка считала размер,
 #      пока перераспакованный PDF лежал в _work/. write_meta* возвращают размер для ensure_cache_space.
+# 2.4: стадия картинок перед каждой картинкой дорисовывает окно PDF на паузе со свежим heartbeat
+#      (render_watched_pdfs): lock архива держит подготовка, и докрутка ждала бы все фото.
+#      convert_pdfs больше не удаляет временный PDF — он нужен стадии картинок и уходит вместе с _work/.
 
 import shutil
 import zipfile
@@ -37,6 +40,7 @@ from config import (
     CACHE_STATUS_ERROR,
     CACHE_FILE_STATUS_PARTIAL,
     CACHE_STAGE_EXTRACTING, CACHE_STAGE_CONVERTING,
+    PDF_CONVERT_LOOKAHEAD_PAGES,
 )
 
 # Импорт логгеров
@@ -50,6 +54,7 @@ from .cache_service import (
     read_meta,
     atomic_write_json
 )
+from .cache_watch import first_missing_in_window
 
 
 # ============================================================================
@@ -337,13 +342,9 @@ async def convert_pdfs(archive_name: str, zip_path: Path, cache_dir: Path,
                 # resume_pdf_conversion при следующем просмотре
                 file_entry["status"] = CACHE_FILE_STATUS_PARTIAL
                 file_entry["pages_done"] = pages_done
-            
-            # Удаляем temp PDF (докрутка перераспакует его из ZIP)
-            try:
-                pdf_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-            
+            # Временный PDF остаётся в _work/: по нему стадия картинок дорисовывает окно,
+            # пока смотрят (render_watched_pdfs); удаляется вместе с _work/ в конце подготовки
+
         except Exception as e:
             app_logger.warning(f"Error converting PDF {pdf_path.name}: {e}")
             # Находим запись и помечаем как error
@@ -354,6 +355,54 @@ async def convert_pdfs(archive_name: str, zip_path: Path, cache_dir: Path,
                 file_entry["error"] = str(e)
 
 
+async def render_watched_pdfs(archive_name: str, work_dir: Path, files_info: list[dict]) -> None:
+    """
+    Дорисовывает окно просмотра PDF на паузе между картинками стадии изображений.
+    Lock архива держит подготовка, поэтому докрутка (resume_pdf_conversion) до её конца
+    не запускается, и читатель, дошедший до страницы за прогревом, ждал бы все фотографии.
+    Смотрят PDF и в окне дырка — конвертер рисует окно и возвращается, ожидание читателя
+    ограничено одной картинкой. Без зрителя окно — прогрев, он уже готов: лишней работы нет.
+
+    Args:
+        archive_name: имя архива
+        work_dir: _work/ подготовки — временные PDF лежат там до её конца
+        files_info: список файлов; записи PDF на паузе обновляются по результату
+    """
+    from services.conversion.pdf_to_png_service import convert_pdf_to_directory
+
+    for file_entry in files_info:
+        if file_entry.get("kind") != "pdf" or file_entry.get("status") != CACHE_FILE_STATUS_PARTIAL:
+            continue
+        zip_member = file_entry["zip_path"]
+        try:
+            png_dir = get_png_dir_path(archive_name, zip_member)
+            stem = Path(zip_member).stem
+            # Гистерезис докрутки: впереди от want готова половина окна и позади дырок нет — ждём,
+            # иначе листание запускало бы конвертер перед каждой картинкой ради одной страницы
+            if first_missing_in_window(png_dir, stem, file_entry.get("pages", 0),
+                                       PDF_CONVERT_LOOKAHEAD_PAGES // 2) is None:
+                continue
+            pdf_path = work_dir / zip_member
+            if not pdf_path.exists():
+                continue
+
+            success, result = await convert_pdf_to_directory(pdf_path, png_dir, stem)
+            if not success:
+                # Запись остаётся partial — после снятия lock окно докрутит resume_pdf_conversion
+                app_logger.warning(f"Окно PDF на стадии картинок не отрисовано {archive_name}/{zip_member}: {result}")
+                continue
+
+            pages_done, _page_count, _rendered, completed = result
+            if completed:
+                # Завершённая выглядит как обычная (без status/pages_done), как после докрутки
+                file_entry.pop("status", None)
+                file_entry.pop("pages_done", None)
+            else:
+                file_entry["pages_done"] = pages_done
+        except Exception as e:
+            app_logger.warning(f"Ошибка отрисовки окна PDF на стадии картинок {archive_name}/{zip_member}: {e}")
+
+
 async def convert_images(archive_name: str, zip_path: Path, cache_dir: Path, 
                         files_info: list[dict], write_status_callback) -> None:
     """
@@ -361,7 +410,8 @@ async def convert_images(archive_name: str, zip_path: Path, cache_dir: Path,
     PNG оптимизируется как PNG, остальные форматы конвертируются в JPG.
     Обрабатывает по одному, от мелких к крупным.
     Обновляет files_info с результатами оптимизации.
-    
+    Перед каждой картинкой дорисовывает окно PDF, которые смотрят (render_watched_pdfs).
+
     Args:
         archive_name: имя архива
         zip_path: путь к ZIP
@@ -391,6 +441,11 @@ async def convert_images(archive_name: str, zip_path: Path, cache_dir: Path,
             sub="images",
             detail=f"Images {idx}/{total_images}"
         )
+
+        # Читатель PDF не ждёт все фото: окно дорисовывается между картинками.
+        # После записи статуса — в _prepare.json уже sub=images без converting_path,
+        # как описано в диагностике PDF_TO_PNG.md
+        await render_watched_pdfs(archive_name, work_dir, files_info)
         
         try:
             # Получаем относительный путь внутри _work/ (posix-слэши совпадают с zip_path)

@@ -1,13 +1,15 @@
-# Version 2.4 - 04.10.2026 06:47:06 GMT
+# Version 2.5 - 06.10.2026 11:25:55 GMT
 # Тесты рендера PDF по окну просмотра (services/conversion/pdf_to_png_service.py,
-# services/cache/cache_watch.first_missing_in_window, cache_prepare_service.resume_pdf_conversion)
+# services/cache/cache_watch.first_missing_in_window, cache_prepare_service.resume_pdf_conversion,
+# cache_pipeline.render_watched_pdfs)
 # Описание: Без свежего heartbeat конвертер рендерит только первые K страниц (прогрев), со свежим —
 #           окно из N страниц от want, затем страницы позади want от ближайшей, пока heartbeat
 #           не старше BACKFILL_FRESH. Готовые PNG не перерисовываются. Докрутка — no-op без lock
 #           и распаковки, пока впереди от want готова половина окна и позади нет дырок
 #           (гистерезис). Сквозные сценарии: standalone PDF и PDF
 #           из ZIP уходят в partial и докручиваются через want; «В кэш» учитывает подготовку;
-#           сбой докрутки переводит запись в error и освобождает lock.
+#           сбой докрутки переводит запись в error и освобождает lock; стадия картинок подготовки
+#           дорисовывает окно PDF, который смотрят.
 #           PDF генерируется PyMuPDF; без fitz тесты пропускаются.
 # 1.1: порядок рендеринга — по снимкам готовых PNG перед каждой страницей (без mtime);
 #      сбой докрутки закрывает директорию на готовых страницах, повторная докрутка — no-op.
@@ -17,9 +19,12 @@
 # 2.2: окно от want дозаполняет страницы позади (порядок от ближайшей, остановка по stale heartbeat).
 # 2.3: порог дозаполнения BACKFILL_FRESH короче окна свежести; докрутка дозаполняет дырку позади want.
 # 2.4: соседи want вперемешку с обеих сторон (NEAR_PAGES пар); NEAR_PAGES=0 — прежний порядок.
+# 2.5: стадия картинок подготовки дорисовывает окно PDF, который смотрят, между картинками;
+#      без зрителя — ничего лишнего.
 
 import asyncio
 import json
+import shutil
 import time
 import zipfile
 
@@ -27,9 +32,11 @@ import pytest
 
 fitz = pytest.importorskip("fitz")
 
+import services.cache.cache_pipeline as pipeline_module
 import services.cache.cache_prepare_service as prepare_service
 import services.cache.cache_service as cache_service_module
 import services.cache.cache_watch as cache_watch_module
+import services.conversion.image_conversion_service as image_service
 import services.conversion.pdf_to_png_service as pdf_service
 from services.cache.cache_watch import is_partial
 from services.cache.cache_prepare_service import (
@@ -101,6 +108,7 @@ def window(monkeypatch):
         monkeypatch.setattr(cache_watch_module, "PDF_CONVERT_PREWARM_PAGES", prewarm)
         monkeypatch.setattr(pdf_service, "PDF_CONVERT_LOOKAHEAD_PAGES", lookahead)
         monkeypatch.setattr(prepare_service, "PDF_CONVERT_LOOKAHEAD_PAGES", lookahead)
+        monkeypatch.setattr(pipeline_module, "PDF_CONVERT_LOOKAHEAD_PAGES", lookahead)
     return set_window
 
 
@@ -297,7 +305,9 @@ def _assert_lock_released(cache_root, archive_name):
     assert not (archive_dir / "_work").exists()
 
 
-def _make_zip(tmp_path, archive_name, member="dir1/report.pdf"):
+def _make_zip(tmp_path, archive_name, member="dir1/report.pdf", images=()):
+    """ZIP с PDF и картинками images (имена внутри архива); байты картинок произвольные —
+    тесты со стадией картинок подменяют optimize_image_sync."""
     data_dir = tmp_path / "data"
     data_dir.mkdir(exist_ok=True)
     pdf = tmp_path / "report.pdf"
@@ -305,6 +315,8 @@ def _make_zip(tmp_path, archive_name, member="dir1/report.pdf"):
     source = data_dir / f"{archive_name}.zip"
     with zipfile.ZipFile(source, "w") as zf:
         zf.write(pdf, member)
+        for n, image in enumerate(images, start=1):
+            zf.writestr(image, b"x" * n)  # разный размер — стабильный порядок стадии картинок
     return source
 
 
@@ -392,6 +404,44 @@ def test_zip_pdf_partial_then_resume(tmp_path, cache_root, window, monkeypatch):
     assert len(list(png_dir.glob("*.png"))) == PAGES
     assert meta["cache_size_bytes"] >= sum(p.stat().st_size for p in png_dir.glob("*.png"))
     _assert_lock_released(cache_root, "00001-TST")
+
+
+@pytest.mark.parametrize("watched", [True, False], ids=["watched", "no_viewer"])
+def test_images_stage_renders_watched_pdf_window(tmp_path, cache_root, window, monkeypatch, watched):
+    """Подготовка держит lock архива до конца стадии картинок, докрутка в это время не идёт.
+    Читатель, дошедший до страницы за прогревом, получает окно перед следующей картинкой,
+    а не после всех фото; без зрителя стадия картинок ничего не дорисовывает."""
+    window(2, 4)
+    images = ["photos/a.jpg", "photos/b.jpg", "photos/c.jpg"]
+    source = _make_zip(tmp_path, "00007-TST", images=images)
+    png_dir = cache_root / "00007-TST" / "dir1" / "report-png"
+    ready_at_image = []
+
+    def fake_optimize(src, dst, *_limits):
+        ready_at_image.append(_ready_pages(png_dir, "report"))
+        shutil.copyfile(src, dst)
+        if watched and len(ready_at_image) == 1:
+            # Читатель дошёл до 3-й страницы, пока идёт стадия картинок
+            _watch(png_dir, want=3)
+        return True
+
+    monkeypatch.setattr(image_service, "optimize_image_sync", fake_optimize)
+
+    _run(prepare_archive_cache("00007-TST", source))
+
+    meta = _meta(cache_root, "00007-TST")
+    entry = next(f for f in meta["files"] if f["kind"] == "pdf")
+    if watched:
+        # Окно [3, 6] дорисовано перед второй картинкой — ожидание не дольше одной картинки
+        assert ready_at_image == [{1, 2}] + [set(range(1, PAGES + 1))] * 2
+        assert "status" not in entry and "pages_done" not in entry
+    else:
+        assert ready_at_image == [{1, 2}] * 3
+        assert entry["status"] == "partial"
+        assert entry["pages_done"] == 2
+    # Стадия картинок дошла до конца
+    assert all("cache_path" in f for f in meta["files"] if f["kind"] == "image")
+    _assert_lock_released(cache_root, "00007-TST")
 
 
 def test_resume_skips_when_half_window_ready(tmp_path, cache_root, window, monkeypatch):
