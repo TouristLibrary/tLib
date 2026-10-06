@@ -1,8 +1,9 @@
 <!--
-  Version 1.1 - 05.10.2026 09:33:00 GMT
+  Version 1.2 - 06.10.2026 12:44:51 GMT
 
   PNG Viewer: просмотр PNG страниц из data.cache.
   1.1: спиннер в заглушке страницы (.page-placeholder.is-busy) — общий стиль с .loading-spinner
+  1.2: apple-touch-icon для Safari на iPhone (иначе он ищет /apple-touch-icon.png в корне, 404).
 -->
 <!DOCTYPE html>
 <html lang="ru">
@@ -11,6 +12,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title>PNG Viewer · tLib</title>
     <link rel="icon" type="image/x-icon" href="assets/favicon.ico">
+    <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png">
     <!-- Modulepreload: параллельная загрузка всех ES-модулей вместо каскадной.
          Список должен содержать ВСЕ модули из дерева зависимостей entry point (js/png-viewer-init.js).
          При добавлении/удалении/переименовании .js файла — обновите этот список. -->
