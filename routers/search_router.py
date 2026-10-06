@@ -1,4 +1,4 @@
-# Version 3.8 - 01.10.2026 14:58:06 GMT
+# Version 3.9 - 06.10.2026 12:43:50 GMT
 # Search Router для TlibWebApp с поддержкой пагинации и ограничением тяжёлых запросов
 # Описание: API endpoint POST /api/search для серверного поиска в базе данных SQLite. Принимает параметры формы поиска,
 #           поддерживает все поля: Шифр, ДопШифр, Маршрут, Район, Автор, РайонОбщий, Тип, КатегорияС, КатегорияПо, Год (через ГодС/ГодПо в форме), МесяцС, МесяцПо.
@@ -17,10 +17,13 @@
 #           в поиске, но фронтенд скрывает файл; см. services/hidden_reports.py).
 # 3.8: _run_timed — в «Поиск завершен» поля wait_ms (ожидание свободного потока) и sql_ms
 #           (COUNT + основной запрос): видно, ждёт ли поиск пул или сам SQL.
+# 3.9: ClientDisconnect на приёме формы — INFO без traceback (обрыв клиентом не ошибка приложения);
+#           в «Поиск» поле form_ms (приём тела запроса) — медленная сеть клиента видна отдельно от SQL.
 
 import asyncio
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
+from starlette.requests import ClientDisconnect
 from pathlib import Path
 import logging
 import time
@@ -104,11 +107,14 @@ async def search_database(request: Request):
     try:
         # Получаем данные формы
         form_data = await request.form()
+        # Приём тела запроса: при медленной сети клиента здесь уходят секунды, а SQL — миллисекунды
+        form_ms = round((time.time() - start_time) * 1000, 2)
         form_dict = dict(form_data)
 
         log_with_data(logging.INFO, "Поиск",
                      endpoint="/api/search",
                      fields=len(form_dict),
+                     form_ms=form_ms,
                      ip=client_ip)
 
         # Проверяем наличие БД
@@ -223,6 +229,21 @@ async def search_database(request: Request):
             # Освобождаем слот лимитера если был захвачен
             if is_heavy_query:
                 await limiter.release()
+
+    except ClientDisconnect:
+        # Клиент закрыл соединение, пока сервер принимал тело запроса (медленная сеть,
+        # уход со страницы). Это не ошибка приложения: одна INFO-строка без traceback,
+        # чтобы не засорять critical.log и не отправлять администратора искать сбой.
+        if is_heavy_query:
+            await limiter.release()
+        log_with_data(logging.INFO, "Поиск прерван: клиент закрыл соединение",
+                     endpoint="/api/search",
+                     ip=client_ip,
+                     time_ms=round((time.time() - start_time) * 1000, 2))
+        return {
+            "success": False,
+            "error": "Соединение закрыто клиентом"
+        }
 
     except Exception as e:
         # Освобождаем слот при ошибке если был захвачен
