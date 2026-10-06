@@ -92,7 +92,7 @@ TlibWebApp/
 │   ├── upload_router.py    # GET/POST /api/upload/* (тонкий слой, логика → upload_service)
 │   ├── health_router.py    # GET /health
 │   ├── sitemap_router.py   # GET /sitemap.xml (динамическая генерация с кешем по reference_version)
-│   └── static_router.py    # GET / (SEO-рендер, 301 без меток Clean-param), /robots.txt, /index.html (301→/), /about.html, редиректы, /api/redirect-table
+│   └── static_router.py    # GET / (SEO-рендер, 301 без меток Clean-param), /robots.txt, /index.html (301→/), /about.html, legacy-редиректы (/doc.aspx?id=, пути файлов старого сайта /png|pdf|tif|zip/…, /files/<id>/…), /api/redirect-table
 │
 ├── services/               # Бизнес-логика
 │   ├── file_service.py     # Работа с файлами

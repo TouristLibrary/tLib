@@ -1,7 +1,9 @@
-# Version 1.6 - 22.09.2026 11:05:00 GMT
+# Version 1.7 - 06.10.2026 12:18:01 GMT
 # Конфигурация приложения TlibWebApp
 # Описание: Метаданные, сетевые настройки, пути к ресурсам, логирование,
 #           редиректы и ключи app.state.
+# 1.7: REDIRECT_LEGACY_FILE_KINDS / REDIRECT_LEGACY_FILES_PREFIX — пути файлов старого
+#      сайта (/png/02/89/028919.58.png, /files/43745/0/имя.pdf) ведут на страницу отчёта.
 # 1.6: комментарий ROBOTS_CLEAN_PARAMS — список ещё и вырезается из живых URL.
 # 1.5: ysclid в ROBOTS_CLEAN_PARAMS — Яндекс дописывает его к ссылке из выдачи.
 # 1.4: SITE_NOTICE_PATH / SITE_NOTICE_MAX_LENGTH — серверное объявление в сайдбаре
@@ -118,6 +120,14 @@ REDIRECT_SOURCE_ALIASES: list[str] = ["/Doc.aspx", "/DOC.ASPX", "/Doc.ASPX", "/D
 
 # Пути главной страницы старого сайта (ASP.NET default document)
 REDIRECT_DEFAULT_ASPX_PATHS: list[str] = ["/default.aspx", "/Default.aspx", "/DEFAULT.ASPX"]
+
+# Каталоги файлового хранилища старого сайта: /<kind>/<aa>/<bb>/<СтарыйID>[.<стр>].<ext>
+# (/png/02/89/028919.58.png, /pdf/02/95/029588.pdf). Страницы PNG старого сайта
+# проиндексированы поиском по картинкам; id из имени ведёт на страницу отчёта.
+REDIRECT_LEGACY_FILE_KINDS: tuple[str, ...] = ("pdf", "png", "tif", "zip")
+
+# Вложения старого сайта: /files/<СтарыйID>/<n>/<имя> (/files/43745/0/отчет.pdf)
+REDIRECT_LEGACY_FILES_PREFIX: str = "/files"
 
 # Код статуса для редиректа (302 = временный редирект)
 REDIRECT_STATUS_CODE: int = 302

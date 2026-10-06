@@ -1,4 +1,4 @@
-# Version 1.8 - 22.09.2026 13:57:00 GMT
+# Version 1.9 - 06.10.2026 12:19:16 GMT
 # Static Router для TlibWebApp
 # Описание: Роутер для обработки статических страниц, серверных редиректов и таблицы редиректов.
 #           GET / — SEO-aware рендер: для компактных URL отчётов (/?123, /?123-ТССР) возвращает
@@ -13,6 +13,10 @@
 #             - /doc.aspx?id=<digits>[&page=<digits>] (и регистровые варианты: /Doc.aspx, /DOC.ASPX и др.)
 #             - /?id=<digits>[&page=<digits>]
 #             - /default.aspx (и регистровые варианты) → / или /?id= если есть id
+#             - /pdf|png|tif|zip/<aa>/<bb>/<СтарыйID>[.<стр>].<ext> (файлы старого сайта)
+#             - /files/<СтарыйID>/<n>/<имя> (вложения старого сайта)
+#             Пути файлов ведут на корень отчёта без страницы: нумерация PNG старого
+#             сайта не обязана совпадать с PDF. Ведущие нули id (028919) снимаются.
 #           Маппинг выполняется строго по таблице app.state.redirect_table: id=<СтарыйID> → <Шифр>-<ДопШифр> (или <Шифр>).
 #           Если указан page, добавляет hash #tab=pdf&p=<page> для открытия PDF на нужной странице (PDF считается один).
 #           Если id невалиден/не найден, редиректит на /?notfound=1 (UI показывает «Ничего не найдено»).
@@ -28,10 +32,14 @@
 #                legacy ?id= обрабатывается до очистки меток — один переход, не два.
 #           1.8: /, /index.html, /about.html и /robots.txt принимают HEAD — краулеры
 #                (curl -I) больше не получают 405 от FastAPI, который HEAD к GET не добавляет.
+#           1.9: пути файлов старого сайта (/png/02/89/028919.58.png, /files/43745/0/x.pdf)
+#                → 301 на страницу отчёта по СтарыйID; ядро поиска по id вынесено в
+#                _redirect_by_old_id и общее с ?id=. Имя без цифр → 404, как раньше.
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pathlib import Path
+import re
 import urllib.parse
 
 # Импорт конфигурации
@@ -41,6 +49,8 @@ from config import (
     REDIRECT_SOURCE,
     REDIRECT_SOURCE_ALIASES,
     REDIRECT_DEFAULT_ASPX_PATHS,
+    REDIRECT_LEGACY_FILE_KINDS,
+    REDIRECT_LEGACY_FILES_PREFIX,
     REDIRECT_STATUS_CODE,
     ROBOTS_CLEAN_PARAMS,
     SITE_URL,
@@ -168,6 +178,21 @@ def _resolve_legacy_redirect(request: Request, source: str) -> "RedirectResponse
     if old_id is None:
         return None
 
+    return _redirect_by_old_id(request, old_id, page, source)
+
+
+def _redirect_by_old_id(
+    request: Request, old_id: str, page: int | None, source: str
+) -> RedirectResponse:
+    """
+    Редирект по СтарыйID через app.state.redirect_table.
+
+    Общее ядро для query-форматов (?id=) и путей файлов старого сайта: одни и те же
+    логи и одинаковый ответ на промах, где бы ни был записан id.
+
+    Returns:
+        301 на страницу отчёта (с #tab=pdf&p=N при page) или 302 на /?notfound=1.
+    """
     if not old_id.isdigit():
         app_logger.info(f"Legacy redirect ({source}): невалидный id='{old_id}'")
         return RedirectResponse(url="/?notfound=1", status_code=REDIRECT_STATUS_CODE)
@@ -177,7 +202,9 @@ def _resolve_legacy_redirect(request: Request, source: str) -> "RedirectResponse
         app_logger.warning(f"Таблица редиректов не загружена ({source} legacy redirect)")
         return RedirectResponse(url="/?notfound=1", status_code=REDIRECT_STATUS_CODE)
 
-    redirect_target = redirect_table.get(f"id={old_id}")
+    # Ключи таблицы без ведущих нулей (id=28919), а имена файлов старого сайта — с ними (028919).
+    # lstrip, а не int(): isdigit() пропускает «²», на котором int() падает.
+    redirect_target = redirect_table.get(f"id={old_id.lstrip('0') or '0'}")
     if not redirect_target:
         app_logger.info(f"Legacy redirect ({source}): id={old_id} не найден в таблице")
         return RedirectResponse(url="/?notfound=1", status_code=REDIRECT_STATUS_CODE)
@@ -355,6 +382,46 @@ def _make_default_aspx_handler(path: str):
 
 for _default_path in REDIRECT_DEFAULT_ASPX_PATHS:
     router.add_api_route(_default_path, _make_default_aspx_handler(_default_path), methods=["GET"])
+
+
+# Ведущие цифры имени файла старого сайта: 028919.58.png → 028919.
+# [0-9], а не \d: \d в Python совпадает и с неарабскими цифрами.
+_LEGACY_NAME_ID_RE = re.compile(r"[0-9]+")
+
+
+def _make_legacy_file_handler(kind: str):
+    """
+    Фабрика: /<kind>/<aa>/<bb>/<имя> файлового хранилища старого сайта → страница отчёта.
+
+    Маршрут на каждый kind, а не общий /{kind}/...: роутер подключён раньше StaticFiles,
+    и общий шаблон перехватил бы четырёхсегментные пути /js/..., /data.db/...
+    Номер страницы из имени не переносится: нумерация PNG старого сайта не обязана
+    совпадать с PDF, честнее открыть отчёт целиком.
+    """
+    async def _handler(request: Request, aa: str, bb: str, name: str):
+        match = _LEGACY_NAME_ID_RE.match(name)
+        if not match:
+            # Без id в имени это не ссылка старого сайта — отвечаем как на отсутствующий путь
+            raise HTTPException(status_code=404)
+        return _redirect_by_old_id(request, match.group(0), None, f"{kind}/")
+    _handler.__name__ = f"redirect_legacy_{kind}"
+    return _handler
+
+
+for _kind in REDIRECT_LEGACY_FILE_KINDS:
+    router.add_api_route(
+        f"/{_kind}/{{aa}}/{{bb}}/{{name}}",
+        _make_legacy_file_handler(_kind),
+        methods=["GET", "HEAD"],
+    )
+
+
+@router.api_route(REDIRECT_LEGACY_FILES_PREFIX + "/{old_id}/{rest:path}", methods=["GET", "HEAD"])
+async def redirect_legacy_files(request: Request, old_id: str, rest: str):
+    """/files/<СтарыйID>/<n>/<имя> (вложения старого сайта) → страница отчёта."""
+    if not _LEGACY_NAME_ID_RE.fullmatch(old_id):
+        raise HTTPException(status_code=404)
+    return _redirect_by_old_id(request, old_id, None, REDIRECT_LEGACY_FILES_PREFIX.lstrip("/") + "/")
 
 
 @router.get("/api/redirect-table")
