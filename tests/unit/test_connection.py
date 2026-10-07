@@ -1,10 +1,11 @@
-# Version 1.0 - 14.06.2026 18:20:00 GMT
+# Version 1.1 - 07.10.2026 06:56:18 GMT
 # Unit tests for services/database/connection.py
 # Описание: Проверяет open_tlib_db():
 #           - read-only режим запрещает запись (OperationalError на INSERT)
 #           - row_factory=True возвращает sqlite3.Row, False — tuple
 #           - register_lower корректно понижает кириллицу через SQL-функцию LOWER
 #           Всё на tmp-файлах, без живой БД приложения.
+# 1.1: LOWER сворачивает ё в е — поиск LIKE находит «Озёрный» по «озер» и «Озерный» по «озёр».
 
 from __future__ import annotations
 
@@ -118,6 +119,33 @@ class TestRegisterLower:
         try:
             row = conn.execute("SELECT LOWER(NULL)").fetchone()
             assert row[0] is None
+        finally:
+            conn.close()
+
+    def test_lower_folds_yo(self, tmp_path):
+        """UDF LOWER сворачивает Ё и ё в е: поиск не различает «озёр» и «озер»."""
+        db = _make_db(tmp_path / "test.db")
+        conn = open_tlib_db(str(db), register_lower=True)
+        try:
+            row = conn.execute("SELECT LOWER('Ёлка зелёная')").fetchone()
+            assert row[0] == "елка зеленая"
+        finally:
+            conn.close()
+
+    @pytest.mark.parametrize("pattern", ["%озер%", "%озёр%", "%ОЗЁР%"])
+    def test_like_ignores_yo_both_ways(self, tmp_path, pattern):
+        """LOWER(поле) LIKE LOWER(?) находит и «Озёрный», и «Озерный» при любом написании запроса."""
+        db = _make_db(tmp_path / "test.db")
+        writer = sqlite3.connect(str(db))
+        writer.executemany("INSERT INTO items VALUES (?, ?)", [(2, "Озёрный перевал"), (3, "Озерный хребет")])
+        writer.commit()
+        writer.close()
+        conn = open_tlib_db(str(db), register_lower=True)
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM items WHERE LOWER(name) LIKE LOWER(?)", (pattern,)
+            ).fetchone()
+            assert row[0] == 2
         finally:
             conn.close()
 

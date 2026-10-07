@@ -198,7 +198,7 @@ def build_search_query(params: dict) -> tuple[str, list]:
 
 Модуль: `services/database/query_filters.py`
 
-- Поиск по тексту (LIKE)
+- Поиск по тексту (LIKE по словам) без учёта регистра и разницы ё/е: обе стороны сравнения идут через UDF `LOWER` из `open_tlib_db(register_lower=True)` (`services/database/connection.py`), который понижает кириллицу и сворачивает ё в е
 - Диапазоны годов
 - Множественный выбор (IN)
 - Полнотекстовый поиск

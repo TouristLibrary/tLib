@@ -1,8 +1,9 @@
-# Version 3.9 - 06.10.2026 12:43:50 GMT
+# Version 4.0 - 07.10.2026 06:57:43 GMT
 # Search Router для TlibWebApp с поддержкой пагинации и ограничением тяжёлых запросов
 # Описание: API endpoint POST /api/search для серверного поиска в базе данных SQLite. Принимает параметры формы поиска,
 #           поддерживает все поля: Шифр, ДопШифр, Маршрут, Район, Автор, РайонОбщий, Тип, КатегорияС, КатегорияПо, Год (через ГодС/ГодПо в форме), МесяцС, МесяцПо.
-#           Выполняет регистронезависимый поиск с поддержкой кириллицы через пользовательскую функцию LOWER.
+#           Выполняет регистронезависимый поиск с поддержкой кириллицы через пользовательскую функцию LOWER
+#           (ё и е не различаются — см. services/database/connection.py).
 #           Регистрирует функцию CATEGORY_INDEX для определения индекса категории по сложности в упорядоченном списке.
 #           Поиск по категориям находит максимальную категорию похода и проверяет её вхождение в диапазон поиска.
 #           Поддерживает пагинацию через параметры limit и offset: при их наличии возвращает страницу данных с метаданными (total, has_more).
@@ -19,6 +20,8 @@
 #           (COUNT + основной запрос): видно, ждёт ли поиск пул или сам SQL.
 # 3.9: ClientDisconnect на приёме формы — INFO без traceback (обрыв клиентом не ошибка приложения);
 #           в «Поиск» поле form_ms (приём тела запроса) — медленная сеть клиента видна отдельно от SQL.
+# 4.0: пустая выдача — в «Поиск завершен» поле filled с заполненными полями формы (describe_search_form):
+#           каждый десятый поиск возвращает ноль, а по fields=18 причину не восстановить.
 
 import asyncio
 from fastapi import APIRouter, Request
@@ -32,6 +35,7 @@ import json
 # Импорт services
 from services.database import build_search_query, count_search, execute_search
 from services.database.search_limiter import is_light_query
+from services.database.query_helpers import describe_search_form
 from services.id_utils import make_norm_id
 
 # Импорт конфигурации
@@ -182,6 +186,10 @@ async def search_database(request: Request):
 
             time_ms = round((time.time() - start_time) * 1000, 2)
 
+            # Пустая выдача — в лог то, что было заполнено: по строке запрос повторяется на копии
+            # базы и находится причина нуля. Строка выдачи с результатами не меняется
+            filled = {"filled": describe_search_form(form_data)} if offset == 0 and not results else {}
+
             if limit is not None:
                 # Режим пагинации
                 log_with_data(logging.INFO, "Поиск завершен (страница)",
@@ -191,7 +199,8 @@ async def search_database(request: Request):
                              heavy=is_heavy_query,
                              time_ms=time_ms,
                              wait_ms=wait_ms,
-                             sql_ms=sql_ms)
+                             sql_ms=sql_ms,
+                             **filled)
 
                 response_data = {
                     "success": True,
@@ -209,7 +218,8 @@ async def search_database(request: Request):
                              heavy=is_heavy_query,
                              time_ms=time_ms,
                              wait_ms=wait_ms,
-                             sql_ms=sql_ms)
+                             sql_ms=sql_ms,
+                             **filled)
 
                 response_data = {
                     "success": True,

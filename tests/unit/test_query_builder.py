@@ -1,8 +1,9 @@
-# Version 1.0 - 12.06.2026 18:00:00 GMT
+# Version 1.1 - 07.10.2026 06:58:05 GMT
 # Unit tests for services/database/query_builder.py, query_filters.py, query_helpers.py
 # Описание: Проверяет построение SQL-запросов и вспомогательные функции слоя поиска.
 #           Тесты чистой логики: без БД, без сервера. Используется реальный query builder
 #           с патчем DATABASE_TABLE_NAME.
+# 1.1: describe_search_form — строка заполненных полей для лога пустой выдачи.
 
 from __future__ import annotations
 
@@ -42,6 +43,41 @@ class TestGetFormValue(unittest.TestCase):
 
     def test_int_value_coerced_to_str(self):
         self.assertEqual(self._get("Шифр", {"Шифр": 99}), "99")
+
+
+# ---------------------------------------------------------------------------
+# describe_search_form
+# ---------------------------------------------------------------------------
+
+
+class TestDescribeSearchForm(unittest.TestCase):
+    def _describe(self, data):
+        from services.database.query_helpers import describe_search_form
+        return describe_search_form(data)
+
+    def test_filled_fields_in_form_order(self):
+        """Поля идут в порядке формы, а не в порядке ключей запроса; пустые пропущены."""
+        data = {"Тип": "пеший", "ГодС": "2020", "Район": "", "Маршрут": "Архыз"}
+        self.assertEqual(self._describe(data), "Маршрут=Архыз; Тип=пеший; ГодС=2020")
+
+    def test_service_and_unknown_keys_skipped(self):
+        """limit, offset, сортировка и чужие ключи в строку не попадают."""
+        data = {"Автор": "Иванов", "limit": "100", "offset": "0",
+                "sortColumn": "Год", "sortOrder": "desc", "junk": "x"}
+        self.assertEqual(self._describe(data), "Автор=Иванов")
+
+    def test_line_breaks_collapsed(self):
+        """Перевод строки из textarea не должен разорвать строку лога."""
+        data = {"Маршрут": "Эльбрус\n[2026-10-07] WARNING поддельная\r\nстрока\tлога"}
+        self.assertEqual(self._describe(data), "Маршрут=Эльбрус [2026-10-07] WARNING поддельная строка лога")
+
+    def test_long_value_truncated(self):
+        from config import SEARCH_LOG_VALUE_MAX_LENGTH
+        result = self._describe({"Маршрут": "а" * (SEARCH_LOG_VALUE_MAX_LENGTH + 50)})
+        self.assertEqual(result, "Маршрут=" + "а" * SEARCH_LOG_VALUE_MAX_LENGTH)
+
+    def test_empty_form_returns_empty_string(self):
+        self.assertEqual(self._describe({"Маршрут": "  ", "limit": "100"}), "")
 
 
 # ---------------------------------------------------------------------------

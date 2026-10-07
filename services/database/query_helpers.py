@@ -1,16 +1,19 @@
-# Version 1.1 - 21.02.2026 00:00:00 GMT
+# Version 1.2 - 07.10.2026 06:57:06 GMT
 # Query Helpers для построения SQL запросов
 # Описание: Вспомогательные функции для обработки параметров поиска.
 #           get_form_value() - безопасное извлечение и нормализация значения поля из form_data.
+#           describe_search_form() - заполненные поля фильтра одной строкой для лога пустой выдачи.
 #           category_sort_key() - сортировка категорий по сложности (н/к -> б/к -> УТП -> 0-6).
 #           extract_words_from_text() - извлечение слов из текста с поддержкой кириллицы и SQL LIKE символов.
 #           escape_like_pattern() - обработка SQL LIKE паттернов (wildcards разрешены).
 #           parse_route_field() - парсинг поля Маршрут для извлечения Шифр и ДопШифр.
 #           get_category_index() - получение индекса категории в упорядоченном списке сложности.
 #           Все функции являются чистыми (без побочных эффектов).
+# 1.2: describe_search_form() — поле filled в «Поиск завершен» при пустой выдаче.
 
 import re
 
+from config import SEARCH_FORM_FIELDS, SEARCH_LOG_VALUE_MAX_LENGTH
 from logging_config import app_logger
 
 
@@ -37,6 +40,32 @@ def get_form_value(form_data, key: str, log_value: bool = False) -> str:
     except Exception as e:
         app_logger.error(f"    ОШИБКА при получении {key}: {e}")
         return ''
+
+
+def describe_search_form(form_data) -> str:
+    """
+    Заполненные поля фильтра формы поиска одной строкой для лога: «Маршрут=…; Тип=…».
+
+    Пишется в «Поиск завершен» при пустой выдаче: по строке запрос повторяется на копии базы
+    и находится причина нуля. Берутся только поля SEARCH_FORM_FIELDS — limit, offset,
+    сортировка и чужие ключи в строку не попадают.
+
+    Пробельные символы схлопываются: форматтер лога экранирует только кавычки, и перевод строки
+    из textarea «Маршрут» подделал бы отдельную строку лога. Значение обрезается до
+    SEARCH_LOG_VALUE_MAX_LENGTH.
+
+    Args:
+        form_data: dict-like объект с данными формы
+
+    Returns:
+        str: «Поле=значение» через «; » в порядке формы; пустая строка, если ничего не заполнено
+    """
+    parts = []
+    for field in SEARCH_FORM_FIELDS:
+        value = " ".join(get_form_value(form_data, field).split())
+        if value:
+            parts.append(f"{field}={value[:SEARCH_LOG_VALUE_MAX_LENGTH]}")
+    return "; ".join(parts)
 
 
 def category_sort_key(cat):
