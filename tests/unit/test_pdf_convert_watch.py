@@ -1,4 +1,4 @@
-# Version 2.5 - 06.10.2026 11:25:55 GMT
+# Version 2.6 - 07.10.2026 06:08:35 GMT
 # Тесты рендера PDF по окну просмотра (services/conversion/pdf_to_png_service.py,
 # services/cache/cache_watch.first_missing_in_window, cache_prepare_service.resume_pdf_conversion,
 # cache_pipeline.render_watched_pdfs)
@@ -21,6 +21,8 @@
 # 2.4: соседи want вперемешку с обеих сторон (NEAR_PAGES пар); NEAR_PAGES=0 — прежний порядок.
 # 2.5: стадия картинок подготовки дорисовывает окно PDF, который смотрят, между картинками;
 #      без зрителя — ничего лишнего.
+# 2.6: гистерезис докрутки — cache_watch.needs_resume: фикстура window задаёт окно в cache_watch
+#      (докрутка и стадия картинок константу больше не импортируют).
 
 import asyncio
 import json
@@ -32,7 +34,6 @@ import pytest
 
 fitz = pytest.importorskip("fitz")
 
-import services.cache.cache_pipeline as pipeline_module
 import services.cache.cache_prepare_service as prepare_service
 import services.cache.cache_service as cache_service_module
 import services.cache.cache_watch as cache_watch_module
@@ -106,9 +107,9 @@ def window(monkeypatch):
     """Задаёт окно рендера малым для PDF из PAGES страниц: window(K прогрева, N вперёд от want)."""
     def set_window(prewarm, lookahead):
         monkeypatch.setattr(cache_watch_module, "PDF_CONVERT_PREWARM_PAGES", prewarm)
+        # Окно конвертера и гистерезис докрутки (needs_resume) — оба от N
         monkeypatch.setattr(pdf_service, "PDF_CONVERT_LOOKAHEAD_PAGES", lookahead)
-        monkeypatch.setattr(prepare_service, "PDF_CONVERT_LOOKAHEAD_PAGES", lookahead)
-        monkeypatch.setattr(pipeline_module, "PDF_CONVERT_LOOKAHEAD_PAGES", lookahead)
+        monkeypatch.setattr(cache_watch_module, "PDF_CONVERT_LOOKAHEAD_PAGES", lookahead)
     return set_window
 
 

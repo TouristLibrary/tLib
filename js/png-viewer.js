@@ -1,5 +1,9 @@
-// Version 3.9 - 05.10.2026 09:33:00 GMT
+// Version 4.0 - 07.10.2026 06:06:26 GMT
 // PNG Viewer - ESM модуль для просмотра PNG страниц
+// 4.0: опрос /pages — только пока сервер рисует для want (rendering в ответе). Окно готово — тишина
+//   до смены страницы, смена — один запрос, у края окна сервер сам запускает докрутку и снова
+//   отвечает rendering=true. Раньше вкладка опрашивала раз в 2 с, пока на диске не весь PDF, — всю ночь.
+//   404 /pages (кеш вытеснен) — опрос остановлен, заглушки просят обновить страницу
 // 3.9: заглушка страницы, до которой дошёл observer, — со спиннером (класс is-busy):
 //   «подготавливается», пока PNG нет на диске, «загружается» — пока готовый PNG скачивается;
 //   окончательный отказ («не удалось загрузить») без спиннера
@@ -33,7 +37,8 @@
 //   просмотра: сервер конвертирует PDF, только пока вьюер опрашивает /pages, и первой
 //   рендерит страницу want (1-based), которую сейчас показывает вьюер, затем соседей с обеих
 //   сторон, окно впереди и страницы позади неё. Пока PNG want нет на диске, сервер держит
-//   запрос до 1,5 с (long-poll) и отвечает, как только страница готова
+//   запрос до 1,5 с (long-poll) и отвечает, как только страница готова. rendering=false в ответе —
+//   для want рисовать нечего: вьюер не опрашивает до смены страницы
 //
 // СВЯЗЬ С PDF_TO_PNG_SERVICE:
 // - PNG директории создаются автоматически при кешировании PDF
@@ -64,13 +69,14 @@ const CONFIG = {
     IMAGE_RETRY_MAX: 3,                 // Повторов подряд; дальше — новый цикл при возврате к странице
     IMAGE_RETRY_DELAY_MS: 3000,         // Пауза перед повтором (мс)
 
-    // Опрос /pages, пока на диске не все PNG. Лимит API — 300 запросов в минуту на IP, за NAT
+    // Опрос /pages, пока сервер рисует для текущей страницы (rendering в ответе); рисовать нечего —
+    // следующий запрос при смене страницы. Лимит API — 300 запросов в минуту на IP, за NAT
     // его делят несколько читателей, а 429 на /pages гасит heartbeat — поэтому не чаще.
     // Текущей страницы нет на диске — читатель ждёт её (мс). Сервер сам держит запрос до появления
     // PNG (long-poll, до 1,5 с), поэтому пауза между запросами короткая: ~1 запрос в 1,8 с
     PAGES_POLL_WAITING_MS: 300,
-    PAGES_POLL_IDLE_MS: 2000,           // Текущая страница готова; также после сбоя запроса (мс)
-    PAGES_POLL_MIN_GAP_MS: 500,         // Между запросами: листание по неготовым страницам (мс)
+    PAGES_POLL_IDLE_MS: 2000,           // Текущая страница готова, сервер ещё рисует; также после сбоя запроса (мс)
+    PAGES_POLL_MIN_GAP_MS: 500,         // Между запросами: листание (мс)
 };
 
 class PngViewer {
@@ -100,6 +106,7 @@ class PngViewer {
         this.pollController = null;     // AbortController висящего /pages — прыжок обрывает старый want
         this.lastPagesAt = 0;           // Время последнего запроса /pages (мс)
         this.lastPagesWant = null;      // want последнего запроса /pages — сервер его уже знает
+        this.pagesGone = false;         // /pages ответил 404: директории больше нет, PNG не запрашиваем
 
         // ИНТЕГРАЦИЯ: Привязываем DOM элементы (может быть из container)
         this._bindDomElements();
@@ -220,6 +227,7 @@ class PngViewer {
                 this.currentPage = this.options.initialPage;
             }
             this.loadedPages.clear();
+            this.pagesGone = false;
             this.rotations.clear(); // Сбросить повороты при загрузке новой директории
             this.setZoom(CONFIG.DEFAULT_ZOOM); // Сбросить масштаб
 
@@ -233,10 +241,10 @@ class PngViewer {
             if (this.pages.length > 0) {
                 this.renderAllPages();
                 this.updateUI();
-                // Пока на диске не все страницы — опрашиваем /pages: подтягиваем новые PNG
+                // Пока сервер рисует для want — опрашиваем /pages: подтягиваем новые PNG
                 // без перезагрузки вьюера и держим heartbeat, без которого сервер ставит
-                // конвертацию на паузу.
-                if (this._isPolling()) {
+                // конвертацию на паузу. Рисовать нечего — следующий запрос при смене страницы
+                if (this._isPolling() && data.rendering !== false) {
                     this._schedulePoll(this._pollDelay());
                 }
             } else {
@@ -282,28 +290,34 @@ class PngViewer {
     }
 
     /**
-     * Смена текущей страницы (скролл или переход). Страницы нет на диске — сервер узнаёт новый want
-     * сразу, а не на следующем плановом опросе: иначе ожидание складывалось бы из двух опросов.
+     * Смена текущей страницы (скролл или переход): сервер узнаёт новый want сразу, а не на следующем
+     * плановом опросе. Страницы нет на диске — иначе ожидание складывалось бы из двух опросов.
+     * Опрос остановлен (серверу нечего было рисовать) — иначе сервер не узнал бы, что читатель
+     * подошёл к краю окна, и не запустил бы докрутку. Пока опрос идёт, а страница готова, новый
+     * want уйдёт плановым опросом.
      */
     _onCurrentPageChanged() {
         const page = this.pages[this.currentPage];
-        if (!this._isPolling() || !page || this.diskPageNames.has(page.name)) return;
+        if (this.pagesGone || !this._isPolling() || !page) return;
         if (this.currentPage + 1 === this.lastPagesWant) return;
+        const waiting = !this.diskPageNames.has(page.name);
         if (this.pollInFlight) {
-            // Висящий long-poll держит старый want до 1,5 с — обрываем, новый уйдёт из catch
-            this.pollController?.abort();
-        } else {
+            // Висящий long-poll держит старый want до 1,5 с — обрываем, новый уйдёт из catch.
+            // Страница готова — спешить некуда: новый want отправит finally этого запроса
+            if (waiting) this.pollController?.abort();
+        } else if (waiting || this.pollTimer === null) {
             this._schedulePoll(0);
         }
     }
 
     /**
-     * Лёгкий polling страниц, пока на диске не все PNG.
+     * Лёгкий polling страниц, пока сервер рисует для want (rendering в ответе).
      * Каждый запрос — heartbeat просмотра: без него сервер через 20 с ставит конвертацию
      * на паузу, а want направляет её к странице, которую сейчас смотрят.
      * Не сбрасывает zoom/rotations/scroll — только подтягивает появившиеся PNG.
      * Страницы появляются не по порядку, поэтому новые определяются по имени файла.
-     * Следующий опрос планирует сам через _schedulePoll.
+     * Следующий опрос планирует сам через _schedulePoll; rendering=false — опрос остановлен
+     * до смены страницы (_onCurrentPageChanged).
      */
     async _pollNewPages() {
         const knownTotal = this.options.pagesTotal;
@@ -320,6 +334,12 @@ class PngViewer {
             const response = await fetch(this._pagesUrl(this.directory, this.lastPagesWant), {
                 signal: this.pollController.signal,
             });
+            if (response.status === 404) {
+                // Директории нет: кеш вытеснен или пересобирается — опрос бесполезен
+                nextDelay = null;
+                this._markPagesGone();
+                return;
+            }
             if (!response.ok) return;
             const data = await response.json();
             const diskPages = data.pages || [];
@@ -347,6 +367,10 @@ class PngViewer {
 
             if (diskPages.length >= knownTotal) {
                 nextDelay = null;
+            } else if (data.rendering === false) {
+                // Серверу нечего рисовать для want — молчим до смены страницы. Страница сменилась,
+                // пока запрос шёл, — сервер узнаёт новый want сразу (MIN_GAP ограничивает частоту)
+                nextDelay = this.currentPage + 1 === this.lastPagesWant ? null : 0;
             } else {
                 nextDelay = this._pollDelay();
             }
@@ -358,6 +382,29 @@ class PngViewer {
             this.pollController = null;
             if (nextDelay !== null) this._schedulePoll(nextDelay);
         }
+    }
+
+    /**
+     * /pages ответил 404: директории PNG больше нет — кеш вытеснен или пересобирается.
+     * Показанные страницы остаются; заглушки остальных просят обновить страницу (отчёт
+     * подготовится заново), PNG больше не запрашиваются — их нет на диске.
+     */
+    _markPagesGone() {
+        this.pagesGone = true;
+        this.viewportInner.querySelectorAll('.page-container').forEach((container, i) => {
+            const placeholder = container.querySelector('.page-placeholder');
+            if (placeholder) this._showPageGone(placeholder, i);
+        });
+    }
+
+    /**
+     * Заглушка страницы, PNG которой на сервере больше нет. Без спиннера: ждать нечего.
+     * @param {HTMLElement} placeholder
+     * @param {number} pageIndex
+     */
+    _showPageGone(placeholder, pageIndex) {
+        placeholder.textContent = `Страница ${pageIndex + 1} недоступна — обновите страницу`;
+        placeholder.classList.remove('is-busy');
     }
 
     /**
@@ -635,6 +682,12 @@ class PngViewer {
         // Заглушка уже на экране: спиннер (is-busy) показывает, что ожидание живое, а не зависание.
         // Текст меняется через textContent, поэтому спиннер — ::before, а не дочерний элемент
         const placeholder = container.querySelector('.page-placeholder');
+
+        // Директории больше нет (/pages ответил 404) — PNG не запрашиваем, просим обновить страницу
+        if (this.pagesGone) {
+            if (placeholder) this._showPageGone(placeholder, pageIndex);
+            return;
+        }
 
         // PNG ещё нет в /pages — не запрашиваем: 404 по каждой видимой заглушке съедал бы
         // лимит запросов, и heartbeat /pages получал бы 429. Когда файл появится,

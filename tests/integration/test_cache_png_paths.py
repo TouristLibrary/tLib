@@ -1,4 +1,4 @@
-# Version 2.1 - 04.10.2026 07:25:00 GMT
+# Version 2.2 - 07.10.2026 06:09:21 GMT
 # Тесты безопасности путей cache_router и png_viewer_router (этап 4)
 # Описание: Проверяет, что traverse-векторы в archive_name, body.path и dir_path
 #           корректно отклоняются (400), а легитимные пути работают (не 400/500).
@@ -20,6 +20,8 @@
 # 2.0: long-poll /pages — ответ, как только PNG want появился, или по PNG_PAGES_WAIT_SECONDS;
 #      «PDF page wait» с waited_ms и ready; готовая директория и готовая want — без ожидания.
 # 2.1: test_pages_on_partial_dir_resumes_conversion без long-poll (WAIT=0) — проверяет докрутку, не ожидание.
+# 2.2: поле rendering в /pages — идёт подготовка архива или нужна докрутка по гистерезису (needs_resume);
+#      готовая директория и директория без маркера — false.
 
 from __future__ import annotations
 
@@ -38,6 +40,7 @@ from fastapi.testclient import TestClient
 import routers.cache_router as cache_router_module
 import routers.png_viewer_router as png_viewer_router_module
 import services.cache.cache_service as cache_service_module
+import services.cache.cache_watch as cache_watch_module
 from routers.cache_router import router as cache_router
 from routers.png_viewer_router import router as png_viewer_router
 
@@ -516,6 +519,44 @@ class TestConvertWhileWatching:
         assert resp.status_code == 200, resp.text
         assert elapsed < 1.0
         assert _page_waits(caplog) == []
+
+    @pytest.mark.parametrize("want, extra_pages, preparing, expected", [
+        (2, (), False, True),     # страницы want нет — докрутка нужна
+        (1, (), False, False),    # половина окна от want готова, позади дырок нет — рисовать нечего
+        (1, (), True, True),      # идёт подготовка архива — страницы ещё появятся
+        (3, (3,), False, True),   # want готова, позади дырка (стр. 2) — дозаполнение
+    ], ids=["want_missing", "window_ready", "preparing", "hole_behind"])
+    def test_pages_rendering_follows_resume_rule(self, app_client, tmp_dirs, resume_calls, monkeypatch,
+                                                 want, extra_pages, preparing, expected):
+        """rendering — сервер рисует для want: вьюер опрашивает /pages, только пока он true, иначе
+        молчит до смены страницы. Правило — гистерезис докрутки (needs_resume): половина окна от want
+        и дырки позади. Окно N = 2 — половина окна в одну страницу."""
+        monkeypatch.setattr(png_viewer_router_module, "PNG_PAGES_WAIT_SECONDS", 0)
+        monkeypatch.setattr(cache_watch_module, "PDF_CONVERT_LOOKAHEAD_PAGES", 2)
+        png_dir = _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
+        for page in extra_pages:
+            (png_dir / f"report_{page:04d}.png").write_bytes(b"\x89PNG")
+        if preparing:
+            prepare = {"status": "preparing", "stage": "converting",
+                       "updated_at": datetime.now(timezone.utc).isoformat()}
+            (tmp_dirs["cache"] / "00001-TST" / "_prepare.json").write_text(json.dumps(prepare), encoding="utf-8")
+
+        resp = app_client.get(f"/api/png/00001-TST/dir1/report-png/pages?want={want}")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["rendering"] is expected
+
+    def test_pages_rendering_false_without_missing_pages(self, app_client, tmp_dirs):
+        """Готовая директория и директория без маркера _pages_total.txt — рисовать нечего."""
+        png_dir = _make_png_dir(tmp_dirs["cache"], "00001-TST", "report-png")
+        resp = app_client.get("/api/png/00001-TST/report-png/pages?want=1")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["rendering"] is False
+
+        (png_dir / "_pages_total.txt").write_text("2")
+        resp = app_client.get("/api/png/00001-TST/report-png/pages?want=1")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["rendering"] is False
 
     def test_probe_returns_pages_of_partial_pdf(self, app_client, tmp_dirs):
         """PDF на паузе отдаётся с полным числом страниц: вьюер открывается сразу, без жеста,

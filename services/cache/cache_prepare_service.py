@@ -1,4 +1,4 @@
-# Version 2.7 - 03.10.2026 09:36:10 GMT
+# Version 2.8 - 07.10.2026 06:04:45 GMT
 # Cache Prepare Service для TlibWebApp
 # Описание: Централизованный сервис подготовки кеша архивов.
 #           Единственный владелец _prepare.json и lock-логики.
@@ -26,6 +26,8 @@
 #      Гистерезис докрутки видит и дырки позади want (окно cache_watch 1.5).
 # 2.7: ensure_cache_space — в thread pool: обход кеша и shutil.rmtree при вытеснении
 #      блокировали цикл событий напрямую.
+# 2.8: гистерезис докрутки — cache_watch.needs_resume: по тому же правилу /pages отдаёт вьюеру
+#      rendering, и вьюер не опрашивает, когда докрутка не нужна.
 
 import os
 import json
@@ -48,7 +50,6 @@ from config import (
     CACHE_FILE_STATUS_PARTIAL,
     CACHE_STAGE_STARTING, CACHE_STAGE_CONVERTING,
     PNG_PAGES_TOTAL_FILENAME,
-    PDF_CONVERT_LOOKAHEAD_PAGES,
 )
 
 # Импорт логгеров
@@ -64,7 +65,7 @@ from .cache_service import (
     is_cache_valid,
     is_cache_valid_from_meta
 )
-from .cache_watch import count_pngs, first_missing_in_window
+from .cache_watch import count_pngs, needs_resume
 from .cache_pipeline import (
     extract_files,
     extract_single_member,
@@ -571,8 +572,8 @@ async def resume_pdf_conversion(archive_name: str, png_dir_rel: str) -> None:
     # Без него листание запускало бы докрутку на каждую страницу: lock, ensure_cache_space,
     # перераспаковка PDF из ZIP. Дырки позади want заполняет один запуск целиком
     zip_member = entry["zip_path"]
-    if first_missing_in_window(get_png_dir_path(archive_name, zip_member), Path(zip_member).stem,
-                               entry.get("pages", 0), PDF_CONVERT_LOOKAHEAD_PAGES // 2) is None:
+    if not needs_resume(get_png_dir_path(archive_name, zip_member), Path(zip_member).stem,
+                        entry.get("pages", 0)):
         return
 
     # Шаг 2: не мешаем идущей подготовке; stale — очищаем, как prepare_archive_cache

@@ -1,14 +1,15 @@
-# Version 1.7 - 04.10.2026 06:44:42 GMT
+# Version 1.8 - 07.10.2026 06:04:15 GMT
 # Cache Watch для TlibWebApp
 # Описание: Heartbeat просмотра PNG-директории и её частичное состояние.
-#           png-viewer опрашивает /api/png/.../pages, пока на диске не все страницы, — роутер отмечает
-#           это в _watch.json (время и страница, которую показывает вьюер). Конвертер PDF→PNG читает
+#           png-viewer опрашивает /api/png/.../pages, пока сервер рисует для текущей страницы, — роутер
+#           отмечает это в _watch.json (время и страница, которую показывает вьюер). Конвертер PDF→PNG читает
 #           heartbeat между страницами и рендерит want, её соседей с обеих сторон, остаток окна
 #           вперёд, затем страницы позади (first_missing_in_window); рендерить нечего или зритель
 #           ушёл — пауза.
 #           Два порога свежести: окно вперёд — PDF_CONVERT_IDLE_TIMEOUT_SECONDS (20 с), дозаполнение
 #           позади — PDF_CONVERT_BACKFILL_FRESH_SECONDS (5 с), чтобы ушедший бот не рисовал назад 20 с.
-#           Частичная директория (PNG меньше, чем в _pages_total.txt) докручивается при следующем просмотре.
+#           Частичная директория (PNG меньше, чем в _pages_total.txt) докручивается при следующем просмотре,
+#           когда этого требует гистерезис (needs_resume).
 # 1.1: touch_watch обновляет mtime папки архива — LRU видит просмотр PDF
 #      (PDF-вьюер не ходит в /resolve, где метку обновляют image/track).
 # 1.2: heartbeat и LRU-метка в отдельных try — сбой одного не маскируется сообщением другого.
@@ -23,6 +24,8 @@
 # 1.7: при свежем для дозаполнения heartbeat соседи want идут вперемешку — want+1, want-1, … на
 #      PDF_CONVERT_NEAR_PAGES пар, затем остаток окна вперёд и страницы позади. Набор страниц прежний,
 #      меняется только порядок, поэтому гистерезис докрутки не затронут.
+# 1.8: needs_resume — гистерезис докрутки одним правилом для resume_pdf_conversion, стадии картинок
+#      подготовки и поля rendering в /pages: по нему вьюер решает, опрашивать ли дальше.
 
 import os
 import time
@@ -36,6 +39,7 @@ from config import (
     PNG_PAGES_TOTAL_FILENAME,
     PDF_CONVERT_IDLE_TIMEOUT_SECONDS,
     PDF_CONVERT_PREWARM_PAGES,
+    PDF_CONVERT_LOOKAHEAD_PAGES,
     PDF_CONVERT_BACKFILL_FRESH_SECONDS,
     PDF_CONVERT_NEAR_PAGES,
 )
@@ -160,3 +164,23 @@ def first_missing_in_window(png_dir: Path, pdf_stem: str, page_count: int, looka
         if not (png_dir / generate_png_filename(pdf_stem, i)).exists():
             return i
     return None
+
+
+def needs_resume(png_dir: Path, pdf_stem: str, page_count: int) -> bool:
+    """
+    Гистерезис докрутки: по heartbeat впереди от want готово меньше половины окна или, пока heartbeat
+    свежий для дозаполнения, позади want есть дырки. Без него листание запускало бы докрутку на каждую
+    страницу: lock, ensure_cache_space, перераспаковка PDF из ZIP.
+    Одно правило для докрутки (resume_pdf_conversion), стадии картинок подготовки (render_watched_pdfs)
+    и поля rendering в /pages: разойдись они — вьюер опрашивал бы впустую или замолкал, когда докрутка
+    нужна, и читатель упирался бы в заглушки у края окна.
+
+    Args:
+        png_dir: PNG-директория
+        pdf_stem: имя PDF без расширения (имена PNG — generate_png_filename)
+        page_count: число страниц PDF
+
+    Returns:
+        True — для текущего heartbeat нужна докрутка
+    """
+    return first_missing_in_window(png_dir, pdf_stem, page_count, PDF_CONVERT_LOOKAHEAD_PAGES // 2) is not None

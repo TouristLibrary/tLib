@@ -1,8 +1,11 @@
-# Version 2.8 - 04.10.2026 06:45:09 GMT
+# Version 2.9 - 07.10.2026 06:05:54 GMT
 # PNG Viewer Router для TlibWebApp
 # Описание: API endpoints для PNG viewer. Предоставляет листинг PNG директорий в data.cache
 #           и списки PNG файлов для просмотра. Используется embedded-вьюером /png-viewer.
 #           Логика resolve переехала в единый cache_router POST /resolve.
+# 2.9: поле rendering в ответе /pages — сервер рисует для want: идёт конвертация архива или нужна
+#      докрутка (cache_watch.needs_resume, гистерезис resume_pdf_conversion). Вьюер опрашивает, только
+#      пока rendering=true, иначе — при смене страницы: забытая вкладка не шлёт heartbeat всю ночь.
 # 2.8: long-poll /pages — страницы want нет на диске частичной директории: запрос ждёт её до
 #      PNG_PAGES_WAIT_SECONDS и отвечает, как только файл появился. Докрутка стартует до ожидания
 #      (asyncio.create_task), а не после ответа (BackgroundTasks). «PDF page wait» — одна строка
@@ -40,7 +43,7 @@ from config import (
 )
 
 # Импорт сервисов кеша: heartbeat просмотра и докрутка частичной конвертации
-from services.cache.cache_watch import touch_watch, read_pages_total, is_partial, count_pngs
+from services.cache.cache_watch import touch_watch, read_pages_total, is_partial, count_pngs, needs_resume
 from services.cache.cache_prepare_service import is_preparing, read_prepare_status, resume_pdf_conversion
 from services.cache.cache_service import generate_png_filename
 
@@ -204,12 +207,12 @@ async def get_pages(
     Последний сегмент должен быть PNG-директорией (заканчивается на -png).
     Boundary проверка — через канонический validate_and_resolve_under_base() (§3).
 
-    Запрос — heartbeat просмотра: png-viewer опрашивает /pages, пока страниц на диске меньше
-    pages_total. Конвертер рендерит want, её соседей с обеих сторон, остаток окна вперёд, затем
-    страницы позади want; частичная конвертация на паузе возобновляется сразу, до ответа, когда
-    впереди от want готово меньше половины окна или позади want есть дырки (единственный триггер
-    докрутки). Страницы want нет на диске частичной директории — long-poll: ответ, как только
-    файл появился, но не позже PNG_PAGES_WAIT_SECONDS.
+    Запрос — heartbeat просмотра: png-viewer опрашивает /pages, пока сервер рисует для want
+    (rendering в ответе), и шлёт один запрос при смене страницы. Конвертер рендерит want, её соседей
+    с обеих сторон, остаток окна вперёд, затем страницы позади want; частичная конвертация на паузе
+    возобновляется сразу, до ответа, когда впереди от want готово меньше половины окна или позади want
+    есть дырки (needs_resume, единственный триггер докрутки). Страницы want нет на диске частичной
+    директории — long-poll: ответ, как только файл появился, но не позже PNG_PAGES_WAIT_SECONDS.
 
     Args:
         dir_path: путь к директории (например: "12345-ABC/dir1/report-png")
@@ -217,7 +220,8 @@ async def get_pages(
 
     Returns:
         {"pages": [{"name": "...", "url": "...", "size": N}, ...], "total": N,
-         "directory": "...", "pages_total": N}   # pages_total — если известен из pre-scan
+         "directory": "...", "rendering": bool,
+         "pages_total": N}   # pages_total — если известен из pre-scan
     """
     try:
         client_ip = request.client.host if request.client else "unknown"
@@ -263,6 +267,7 @@ async def get_pages(
         rel_parts = full_path.relative_to(cache_root).parts
         archive_name = rel_parts[0]
         png_dir_rel = "/".join(rel_parts[1:])
+        pdf_stem = full_path.name.removesuffix('-png')
 
         # Heartbeat просмотра: конвертер PDF работает, пока директорию смотрят; заодно LRU-метка архива
         touch_watch(full_path, want if want is not None and want >= 1 else None, cache_root / archive_name)
@@ -285,7 +290,7 @@ async def get_pages(
         # рендер, другой — конкуренция PDF одного архива, пусто — докрутка не идёт.
         # _prepare.json читается, только пока страницы нет
         if partial and pages_total and want is not None and 1 <= want <= pages_total:
-            want_png = full_path / generate_png_filename(full_path.name.removesuffix('-png'), want - 1)
+            want_png = full_path / generate_png_filename(pdf_stem, want - 1)
             if not want_png.exists():
                 converting = read_prepare_status(archive_name).get("converting_path", "")
                 started = time.perf_counter()
@@ -307,10 +312,17 @@ async def get_pages(
 
         app_logger.debug(f"PNG pages listing: {dir_path} - {len(pages)} pages")
 
+        # Сервер рисует для want: идёт конвертация архива или нужна докрутка — тот же гистерезис, что
+        # у resume_pdf_conversion. Иначе вьюер замолкает до смены страницы, и забытая вкладка не шлёт
+        # heartbeat раз в 2 с всю ночь. Heartbeat этого запроса уже записан — правило считается для его want
+        rendering = (pages_total is not None and len(pages) < pages_total
+                     and (is_preparing(archive_name) or needs_resume(full_path, pdf_stem, pages_total)))
+
         response_data = {
             'pages': pages,
             'total': len(pages),
             'directory': dir_path,
+            'rendering': rendering,
         }
         if pages_total is not None:
             response_data['pages_total'] = pages_total

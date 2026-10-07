@@ -1,4 +1,4 @@
-# Version 2.4 - 06.10.2026 11:23:54 GMT
+# Version 2.5 - 07.10.2026 06:05:27 GMT
 # Cache Pipeline для TlibWebApp
 # Описание: Конвертационные шаги подготовки кеша.
 #           Извлечение, конвертация PDF/изображений/GPS, запись meta.
@@ -14,6 +14,7 @@
 # 2.4: стадия картинок перед каждой картинкой дорисовывает окно PDF на паузе со свежим heartbeat
 #      (render_watched_pdfs): lock архива держит подготовка, и докрутка ждала бы все фото.
 #      convert_pdfs больше не удаляет временный PDF — он нужен стадии картинок и уходит вместе с _work/.
+# 2.5: гистерезис render_watched_pdfs — cache_watch.needs_resume, общий с докруткой и /pages.
 
 import shutil
 import zipfile
@@ -40,7 +41,6 @@ from config import (
     CACHE_STATUS_ERROR,
     CACHE_FILE_STATUS_PARTIAL,
     CACHE_STAGE_EXTRACTING, CACHE_STAGE_CONVERTING,
-    PDF_CONVERT_LOOKAHEAD_PAGES,
 )
 
 # Импорт логгеров
@@ -54,7 +54,7 @@ from .cache_service import (
     read_meta,
     atomic_write_json
 )
-from .cache_watch import first_missing_in_window
+from .cache_watch import needs_resume
 
 
 # ============================================================================
@@ -379,8 +379,7 @@ async def render_watched_pdfs(archive_name: str, work_dir: Path, files_info: lis
             stem = Path(zip_member).stem
             # Гистерезис докрутки: впереди от want готова половина окна и позади дырок нет — ждём,
             # иначе листание запускало бы конвертер перед каждой картинкой ради одной страницы
-            if first_missing_in_window(png_dir, stem, file_entry.get("pages", 0),
-                                       PDF_CONVERT_LOOKAHEAD_PAGES // 2) is None:
+            if not needs_resume(png_dir, stem, file_entry.get("pages", 0)):
                 continue
             pdf_path = work_dir / zip_member
             if not pdf_path.exists():
