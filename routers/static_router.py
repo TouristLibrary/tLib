@@ -1,4 +1,4 @@
-# Version 1.9 - 06.10.2026 12:19:16 GMT
+# Version 2.0 - 07.10.2026 06:59:06 GMT
 # Static Router для TlibWebApp
 # Описание: Роутер для обработки статических страниц, серверных редиректов и таблицы редиректов.
 #           GET / — SEO-aware рендер: для компактных URL отчётов (/?123, /?123-ТССР) возвращает
@@ -10,7 +10,8 @@
 #           GET /index.html — 301 редирект на / (устранение дубликата).
 #           GET /about.html — рендер с canonical + OG через render_about_html().
 #           Legacy-редиректы поддерживают форматы:
-#             - /doc.aspx?id=<digits>[&page=<digits>] (и регистровые варианты: /Doc.aspx, /DOC.ASPX и др.)
+#             - /doc.aspx?id=<digits>[&page=<digits>] (и регистровые варианты: /Doc.aspx, /DOC.ASPX и др.);
+#               без id → /, как /default.aspx
 #             - /?id=<digits>[&page=<digits>]
 #             - /default.aspx (и регистровые варианты) → / или /?id= если есть id
 #             - /pdf|png|tif|zip/<aa>/<bb>/<СтарыйID>[.<стр>].<ext> (файлы старого сайта)
@@ -19,9 +20,10 @@
 #             сайта не обязана совпадать с PDF. Ведущие нули id (028919) снимаются.
 #           Маппинг выполняется строго по таблице app.state.redirect_table: id=<СтарыйID> → <Шифр>-<ДопШифр> (или <Шифр>).
 #           Если указан page, добавляет hash #tab=pdf&p=<page> для открытия PDF на нужной странице (PDF считается один).
-#           Если id невалиден/не найден, редиректит на /?notfound=1 (UI показывает «Ничего не найдено»).
+#           Если id невалиден/не найден, редиректит на /?notfound=1 (UI показывает «Отчёт по старой ссылке не найден»).
 #           Редиректы статических директорий: /js, /css, /assets, /data → с добавлением / в конце.
 #           Поддерживает fallback для favicon.ico (assets/favicon.ico → favicon.ico).
+#           Отдаёт assets/apple-touch-icon.png по корневым путям, которые Safari запрашивает сам.
 #           1.4: about.html через HTMLResponse (render_about_html); robots.txt + Clean-param;
 #                защитные legacy-маршруты /doc.aspx (регистровые варианты) + /default.aspx.
 #           1.5: robots.txt разрешает обход PDF (Allow: /api/pdf/, /data/*.pdf$) — краулер должен
@@ -35,6 +37,9 @@
 #           1.9: пути файлов старого сайта (/png/02/89/028919.58.png, /files/43745/0/x.pdf)
 #                → 301 на страницу отчёта по СтарыйID; ядро поиска по id вынесено в
 #                _redirect_by_old_id и общее с ?id=. Имя без цифр → 404, как раньше.
+#           2.0: /doc.aspx без id (и с пустым id=) → 301 на /, как /default.aspx: раньше вёл на
+#                /?notfound=1, и человек и Googlebot видели «ничего не найдено» вместо главной.
+#                /apple-touch-icon.png и /apple-touch-icon-precomposed.png → assets/apple-touch-icon.png.
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
@@ -44,6 +49,8 @@ import urllib.parse
 
 # Импорт конфигурации
 from config import (
+    APPLE_TOUCH_ICON_PATH,
+    APPLE_TOUCH_ICON_URL_PATHS,
     FAVICON_PATH,
     LOCAL_ARCHIVE_PATH,
     REDIRECT_SOURCE,
@@ -331,6 +338,15 @@ async def favicon():
         return Response(status_code=404)
 
 
+async def apple_touch_icon():
+    """Иконка для iPhone по корневым путям: Safari запрашивает их сам, не глядя на <link> в странице."""
+    return FileResponse(APPLE_TOUCH_ICON_PATH, media_type="image/png")
+
+
+for _icon_path in APPLE_TOUCH_ICON_URL_PATHS:
+    router.add_api_route(_icon_path, apple_touch_icon, methods=["GET"], response_class=FileResponse)
+
+
 # Редиректы с путей без слеша на пути со слешем для каждой статической директории
 def _make_static_redirect(path: str):
     """Фабрика: создаёт обработчик редиректа path -> path/."""
@@ -350,8 +366,9 @@ async def redirect_doc_aspx(request: Request):
     redirect = _resolve_legacy_redirect(request, "doc.aspx")
     if redirect:
         return redirect
-    # По спецификации legacy URL всегда содержит id. Если нет — показываем notfound.
-    return RedirectResponse(url="/?notfound=1", status_code=REDIRECT_STATUS_CODE)
+    # Без id ссылка ведёт не на отчёт, а на сам старый сайт — открываем главную, как /default.aspx.
+    # «Ничего не найдено» здесь вводило бы в заблуждение и человека, и поисковик
+    return RedirectResponse(url="/", status_code=LEGACY_REDIRECT_STATUS_CODE)
 
 
 def _make_doc_aspx_alias_handler(alias: str):
@@ -360,7 +377,7 @@ def _make_doc_aspx_alias_handler(alias: str):
         redirect = _resolve_legacy_redirect(request, alias.lstrip("/"))
         if redirect:
             return redirect
-        return RedirectResponse(url="/?notfound=1", status_code=REDIRECT_STATUS_CODE)
+        return RedirectResponse(url="/", status_code=LEGACY_REDIRECT_STATUS_CODE)
     _handler.__name__ = f"redirect_{alias.lstrip('/').replace('.', '_')}"
     return _handler
 

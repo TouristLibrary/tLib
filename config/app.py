@@ -1,7 +1,8 @@
-# Version 1.7 - 06.10.2026 12:18:01 GMT
+# Version 1.8 - 07.10.2026 06:58:41 GMT
 # Конфигурация приложения TlibWebApp
 # Описание: Метаданные, сетевые настройки, пути к ресурсам, логирование,
 #           редиректы и ключи app.state.
+# 1.8: APPLE_TOUCH_ICON_PATH / APPLE_TOUCH_ICON_URL_PATHS — Safari сам запрашивает иконку в корне.
 # 1.7: REDIRECT_LEGACY_FILE_KINDS / REDIRECT_LEGACY_FILES_PREFIX — пути файлов старого
 #      сайта (/png/02/89/028919.58.png, /files/43745/0/имя.pdf) ведут на страницу отчёта.
 # 1.6: комментарий ROBOTS_CLEAN_PARAMS — список ещё и вырезается из живых URL.
@@ -61,6 +62,11 @@ FAVICON_PATH: str = "assets/favicon.ico"
 
 # URL путь к favicon для исключения из rate limiting
 FAVICON_URL_PATH: str = "/favicon.ico"
+
+# Иконка для iPhone и пути в корне, по которым Safari ищет её сам, не глядя на
+# <link rel="apple-touch-icon"> в страницах: без маршрута оба пути отдавали 404
+APPLE_TOUCH_ICON_PATH: str = "assets/apple-touch-icon.png"
+APPLE_TOUCH_ICON_URL_PATHS: tuple[str, ...] = ("/apple-touch-icon.png", "/apple-touch-icon-precomposed.png")
 
 # Open Graph картинка: URL-путь, ширина и высота в пикселях
 OG_IMAGE_PATH: str = "/assets/og-image.png"

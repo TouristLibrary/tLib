@@ -1,4 +1,4 @@
-# Version 1.3 - 06.10.2026 12:24:38 GMT
+# Version 1.4 - 07.10.2026 06:59:43 GMT
 # Integration tests: routers/static_router.py — редиректы корня и путей старого сайта
 # Описание: Проверяет редиректы GET / и путей файлов старого сайта без рендера страницы.
 #           Порядок: legacy ?id= раньше очистки меток — один 301 сразу на адрес отчёта.
@@ -10,15 +10,21 @@
 #                → 301 на корень отчёта без страницы; промах → /?notfound=1; мусор → 404.
 #                Регресс: /doc.aspx?id=&page= по-прежнему переносит страницу.
 #           1.3: шапка описывает весь охват файла, не только корень.
+#           1.4: /doc.aspx без id (регистровый алиас, пустой id=) → 301 на /, неизвестный id —
+#                по-прежнему /?notfound=1; apple-touch-icon по обоим корневым путям Safari → 200 PNG.
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from config import REDIRECT_LEGACY_FILE_KINDS
+from config import APPLE_TOUCH_ICON_PATH, APPLE_TOUCH_ICON_URL_PATHS, REDIRECT_LEGACY_FILE_KINDS
 from routers.static_router import router
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture()
@@ -104,3 +110,27 @@ def test_doc_aspx_keeps_page(root_client: TestClient):
     response = root_client.get("/doc.aspx?id=28466&page=3")
     assert response.status_code == 301
     assert response.headers["location"] == "/?3725#tab=pdf&p=3"
+
+
+@pytest.mark.parametrize("path", ["/doc.aspx", "/DOC.ASPX", "/doc.aspx?id="])
+def test_doc_aspx_without_id_redirects_to_root(root_client: TestClient, path: str):
+    """Без id старая ссылка ведёт на главную, как /default.aspx, а не на «ничего не найдено»."""
+    response = root_client.get(path)
+    assert response.status_code == 301
+    assert response.headers["location"] == "/"
+
+
+def test_doc_aspx_unknown_id_redirects_to_notfound(root_client: TestClient):
+    """Промах по таблице — по-прежнему /?notfound=1: там своя фраза про старую ссылку."""
+    response = root_client.get("/doc.aspx?id=99999")
+    assert response.status_code == 302
+    assert response.headers["location"] == "/?notfound=1"
+
+
+@pytest.mark.parametrize("path", APPLE_TOUCH_ICON_URL_PATHS)
+def test_apple_touch_icon_served_at_root(root_client: TestClient, path: str):
+    """Safari запрашивает иконку в корне сам — оба пути отдают тот же PNG, что в assets."""
+    response = root_client.get(path)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content == (ROOT / APPLE_TOUCH_ICON_PATH).read_bytes()

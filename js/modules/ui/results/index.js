@@ -1,6 +1,8 @@
-// Version 1.0 - 07.01.2026 09:55:58 GMT
+// Version 1.1 - 07.10.2026 07:00:30 GMT
 // Описание: Объединяет рендер результатов поиска. Выбирает режим таблицы или карточки одного результата,
 //           и проксирует методы таблицы/карточки, сохраняя публичный API ResultsRenderer.
+// 1.1: renderMessage — строка сообщения вместо результатов; ею показываются и пустая выдача,
+//      и промах по старой ссылке (своя фраза вместо «Ничего не найдено»).
 
 import { CONSTANTS, TAB_IDS } from '../../../config/constants.js';
 import { DOMUtils } from '../utils.js';
@@ -8,6 +10,21 @@ import { TableResultsRenderer } from './table.js';
 import { SingleResultsRenderer } from './single.js';
 
 export class ResultsRenderer {
+    /**
+     * Показывает вместо результатов одну строку сообщения — разметка пустой выдачи.
+     * Текст ставится через textContent: разметка из текста не исполняется
+     * @param {string} text - Текст сообщения
+     */
+    static renderMessage(text) {
+        const resultsDiv = DOMUtils.getElement(CONSTANTS.SELECTORS.RESULTS);
+        if (!resultsDiv) {
+            console.error('Элемент результатов не найден');
+            return;
+        }
+        resultsDiv.innerHTML = '<div class="single-result-formatted"><div class="single-result-field"><span></span></div></div>';
+        resultsDiv.querySelector('.single-result-field span').textContent = text;
+    }
+
     /**
      * Отображает результаты поиска в виде таблицы или карточки одного результата
      * @param {Array} rows - Массив результатов поиска
@@ -29,7 +46,7 @@ export class ResultsRenderer {
 
         if (!rows.length) {
             console.log('ResultsRenderer.render: результатов нет, показываем сообщение');
-            resultsDiv.innerHTML = `<div class="single-result-formatted"><div class="single-result-field"><span>${CONSTANTS.MESSAGES.NO_RESULTS}</span></div></div>`;
+            ResultsRenderer.renderMessage(CONSTANTS.MESSAGES.NO_RESULTS);
             return;
         }
 

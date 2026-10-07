@@ -48,8 +48,9 @@ test.describe('Navigation', () => {
   });
 
   test('Not found (999999999)', async ({ page }) => {
+    // Промах по старой ссылке объясняется своей фразой, а не «Ничего не найдено» пустого поиска
     await page.goto('/doc.aspx?id=999999999', { waitUntil: 'domcontentloaded' });
-    await expect(page.getByText('Ничего не найдено')).toBeVisible({ timeout: 10000 });
+    await expect(page.getByText('Отчёт по старой ссылке не найден')).toBeVisible({ timeout: 10000 });
   });
 
   test('Plain-mode', async ({ page }) => {

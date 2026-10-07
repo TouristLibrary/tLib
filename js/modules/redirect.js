@@ -1,4 +1,4 @@
-// Version 5.2 - 15.06.2026 - импорт serverConfigService обновлён на js/services/
+// Version 5.3 - 07.10.2026 07:00:56 GMT
 // Модуль системы редиректов и обработки URL с поддержкой истории браузера
 // Описание: Обрабатывает URL параметры для автоматического поиска по шифрам.
 //           Классы: URLParser (парсинг шифров), URLSerializer (сериализация формы в URL),
@@ -6,11 +6,15 @@
 //           RedirectManager (инициализация редиректов, очистка URL).
 //           URL обновляется в два этапа: pushState полный формат при начале, replaceState компактный если 1 результат.
 //           Поддерживает поле ЗагруженоС для фильтрации по дате загрузки.
-//           Дополнительно: поддерживает флаг ?notfound=1 (серверный legacy fallback) — показывает «Ничего не найдено»
-//           без API-запроса.
+//           Дополнительно: поддерживает флаг ?notfound=1 (серверный legacy fallback — старая ссылка не нашлась
+//           в таблице редиректов): без API-запроса эмитирует redirect:legacy-not-found.
 //           Автопоиск не зависит от DOM формы: запрос FormData собирается напрямую из params (URL), чтобы избежать гонок
 //           со справочниками и <select> опциями. UI форма заполняется отдельно и может «догнать» значения позже.
-//           Декаплинг: вместо прямого вызова search.js/ui.js эмитирует события redirect:auto-search и redirect:form-reset.
+//           Декаплинг: вместо прямого вызова search.js/ui.js эмитирует события redirect:auto-search,
+//           redirect:form-reset и redirect:legacy-not-found.
+// 5.3: ?notfound=1 — событие redirect:legacy-not-found вместо пустой выдачи: человек видит фразу про старую
+//      ссылку, а не «Ничего не найдено», и кнопка не пишет «найдено 0» без поиска.
+// 5.2: импорт serverConfigService обновлён на js/services/.
 
 import { CONSTANTS } from '../config/constants.js';
 import { errorHandler } from '../core/errorHandler.js';
@@ -210,13 +214,14 @@ export class URLRedirectHandler {
         // Предотвращение циклов: пропускаем уже обработанные URL
         if (URLRedirectHandler.isProcessedUrl(queryString)) return;
 
-        // Спец-флаг для серверного fallback: показать «Ничего не найдено» без API-запроса
+        // Спец-флаг серверного fallback: старая ссылка не нашлась в таблице редиректов.
+        // Без API-запроса; фразу про старую ссылку показывает обработчик события в main.js
         try {
             const qsParams = new URLSearchParams(queryString);
             if (qsParams.get('notfound') === '1') {
                 URLRedirectHandler.markUrlAsProcessed(queryString);
                 appState.setSearching(false);
-                appState.setSearchResults([]);
+                appState.emit('redirect:legacy-not-found');
                 return;
             }
         } catch (error) {
