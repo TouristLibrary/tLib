@@ -1,4 +1,7 @@
-// Version 1.2 - 20.02.2026 - ButtonManager перенесён из buttons.js
+// Version 1.3 - 09.10.2026 08:50:00 GMT
+// 1.3: setupDateInputs задаёт полям «Год с/по» min/max (LIMITS.SEARCH_YEAR_MIN … текущий год + 1) —
+//      опечатка в годе отклоняется браузером, а не уходит в поиск с пустой выдачей.
+// 1.2 - 20.02.2026 - ButtonManager перенесён из buttons.js
 // Описание: Управляет формой поиска: очистка/восстановление полей, оформление select, поля даты, очистка результатов и триггер поиска.
 //           Поддерживает отложенную установку значений для <select> (pendingValue), когда опции подгружаются позже.
 //           Содержит ButtonManager — управление состояниями кнопки поиска (waiting/ready/searching/complete).
@@ -161,6 +164,14 @@ export class FormManager {
      * Настраивает поля даты с переключением типа и календарём
      */
     static setupDateInputs() {
+        // Границы года проверяет браузер при отправке формы: опечатка (20236, 202) не уходит
+        // на сервер и не выглядит как пустой каталог. Верхняя граница плавающая, поэтому не в HTML
+        const yearMax = new Date().getFullYear() + 1;
+        document.querySelectorAll('input[name="ГодС"], input[name="ГодПо"]').forEach(input => {
+            input.min = CONSTANTS.LIMITS.SEARCH_YEAR_MIN;
+            input.max = yearMax;
+        });
+
         const dateInputs = document.querySelectorAll('input[name="ЗагруженоС"]');
         
         dateInputs.forEach(input => {
