@@ -1,4 +1,6 @@
-// Version 3.5 - 24.09.2026 - checkFileAvailable через /prepare?probe=1: рендер карточки не запускает конвертацию, прогрев — после жеста
+// Version 3.6 - 09.10.2026 10:25:00 GMT
+// 3.6: клик по файлу «Прочее» ждёт распаковку (HEAD /cache, Content-Length) и скачивает в этой вкладке.
+// 3.5 - 24.09.2026 - checkFileAvailable через /prepare?probe=1: рендер карточки не запускает конвертацию, прогрев — после жеста
 // Описание: Оркестратор единственного результата поиска. Делегирует рендеринг/обработку
 //           viewer'ов (PDF/Треки/Изображения) соответствующим стратегиям через реестр.
 //           Применяет escapeHtml для защиты от DOM-XSS при вставке данных из БД.
@@ -9,6 +11,8 @@ import { DataFormatter } from '../dataFormatter.js';
 import { escapeHtml, escapeAttribute } from '../../../utils/sanitize.js';
 import { getServerConfig } from '../../../services/serverConfigService.js';
 import { cacheWarmService } from '../../../services/cacheWarmService.js';
+import { errorHandler } from '../../../core/errorHandler.js';
+import { sleep } from '../../../utils/freeze.js';
 
 import {
     parseViewStateFromHash, replaceUrlHash, clearHash,
@@ -48,6 +52,68 @@ const VIEWER_BY_TAB = {
 // =============================================================================
 
 const FILE_CHECK_TIMEOUT_MS = 3000;
+
+/**
+ * Клик по файлу «Прочее»: прямая ссылка /cache/… на неподготовленном кеше — 404.
+ * Запускает подготовку и скачивает файл в этой вкладке, когда HEAD совпал по размеру
+ * (распаковка пишет файл на место целиком, полуфайл HEAD застать не должен по длине).
+ * @param {HTMLAnchorElement} link
+ * @param {string} archiveName
+ */
+async function downloadOtherFile(link, archiveName) {
+    if (link.classList.contains('is-waiting')) return;
+
+    link.classList.add('is-waiting');
+    document.body.classList.add('is-waiting-file');
+    // Размер неизвестен (нет в списке файлов) — сверять не с чем, достаточно ответа 200
+    const expectedSize = link.dataset.size;
+    const checkSize = Boolean(expectedSize) && expectedSize !== '0';
+    const prepPromise = cacheWarmService.prepareCache(archiveName);
+    let prep = null;
+    prepPromise.then(result => { prep = result; });
+
+    try {
+        let delay = CONSTANTS.TIMING.RESOLVE_INITIAL_DELAY;
+        for (let attempt = 0; attempt < CONSTANTS.LIMITS.RESOLVE_MAX_ATTEMPTS; attempt++) {
+            // Подготовка упала — ждать нечего; not_found — архива нет (или отчёт скрыт)
+            if (prep?.status === 'error') throw new Error(CONSTANTS.MESSAGES.GENERIC_ERROR);
+            if (prep?.status === 'not_found') throw new Error(CONSTANTS.MESSAGES.FILE_NOT_IN_ARCHIVE);
+
+            let resp = null;
+            try {
+                resp = await fetch(link.href, { method: 'HEAD' });
+            } catch {
+                resp = null;
+            }
+
+            const length = resp?.headers?.get('Content-Length');
+            if (resp?.ok && (!checkSize || length === expectedSize)) {
+                const download = document.createElement('a');
+                download.href = link.href;
+                download.download = '';
+                document.body.appendChild(download);
+                download.click();
+                download.remove();
+                return;
+            }
+
+            if (prep?.status === 'ready' && resp?.status === 404) {
+                throw new Error(CONSTANTS.MESSAGES.FILE_NOT_IN_ARCHIVE);
+            }
+
+            await sleep(delay);
+            delay = Math.min(delay * CONSTANTS.TIMING.RESOLVE_BACKOFF_MULTIPLIER, CONSTANTS.TIMING.RESOLVE_MAX_DELAY);
+        }
+        throw new Error(CONSTANTS.MESSAGES.FILE_WAIT_TIMEOUT);
+    } catch (error) {
+        errorHandler.handle(error instanceof Error ? error.message : CONSTANTS.MESSAGES.FILE_WAIT_TIMEOUT);
+    } finally {
+        link.classList.remove('is-waiting');
+        if (!document.querySelector('a.other-file-link.is-waiting')) {
+            document.body.classList.remove('is-waiting-file');
+        }
+    }
+}
 
 /**
  * Проверяет наличие файла через /api/cache/.../prepare?probe=1 и возвращает статус + список файлов.
@@ -407,6 +473,15 @@ export class SingleResultsRenderer {
         });
 
         SingleResultsRenderer._tabController = tabs;
+
+        document.querySelector('.tabs-container')?.addEventListener('click', (event) => {
+            const link = event.target.closest('a.other-file-link');
+            if (!link) return;
+            const archiveName = link.closest('.tabs-container')?.dataset?.archiveName;
+            if (!archiveName) return;
+            event.preventDefault();
+            downloadOtherFile(link, archiveName);
+        });
 
         // Делегируем setupHandlers всем стратегиям
         Object.values(VIEWER_STRATEGIES).forEach(s => s.setupHandlers());

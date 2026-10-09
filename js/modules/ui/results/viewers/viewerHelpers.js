@@ -1,4 +1,6 @@
-// Version 1.3 - 25.09.2026 - resolveAndWait: kind=pdf убран из /resolve (PDF-вьюер ходит в /pages)
+// Version 1.4 - 09.10.2026 10:25:00 GMT
+// 1.4: ссылка «Прочее» — other-file-link и data-size: клик ждёт распаковку и сверяет Content-Length.
+// 1.3 - 25.09.2026 - resolveAndWait: kind=pdf убран из /resolve (PDF-вьюер ходит в /pages)
 // Описание: Shared утилиты для всех viewer-стратегий (PDF/Image/Track):
 //   - DOM-утилиты (setActiveLink, showSingleContainer, queryLinks, setupClickDelegates, findLinkByDataset, safeFocusElement)
 //   - HTML-строители (spinnerPlaceholderHtml, prepareFileLink, prepareLinkContext, buildViewersBlockHtml, buildOtherLinkHtml, SVG-иконки)
@@ -360,7 +362,7 @@ export function buildViewersBlockHtml(files, { wrapperClass, dataAttrName, archi
 export function buildOtherLinkHtml(prep) {
     const { escapedUrl, escapedDisplayName, fileSize } = prep;
     const sizeStr = FileUtils.formatSizeShort(fileSize);
-    return `<a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" title="${sizeStr}">${escapedDisplayName}${FileUtils.formatSizeInMb(fileSize)}</a>`;
+    return `<a class="other-file-link" href="${escapedUrl}" target="_blank" rel="noopener noreferrer" data-size="${Number(fileSize) || 0}" title="${sizeStr}">${escapedDisplayName}${FileUtils.formatSizeInMb(fileSize)}</a>`;
 }
 
 // =============================================================================
