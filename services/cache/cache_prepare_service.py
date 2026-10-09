@@ -1,4 +1,4 @@
-# Version 2.8 - 07.10.2026 06:04:45 GMT
+# Version 2.9 - 09.10.2026 10:20:00 GMT
 # Cache Prepare Service для TlibWebApp
 # Описание: Централизованный сервис подготовки кеша архивов.
 #           Единственный владелец _prepare.json и lock-логики.
@@ -28,6 +28,9 @@
 #      блокировали цикл событий напрямую.
 # 2.8: гистерезис докрутки — cache_watch.needs_resume: по тому же правилу /pages отдаёт вьюеру
 #      rendering, и вьюер не опрашивает, когда докрутка не нужна.
+# 2.9: предусловия докрутки (meta валидна, запись partial, исходник на месте) — одна функция
+#      resumable_pdf_entry для докрутки и поля rendering в /pages. Иначе вьюер опрашивал бы
+#      /pages, когда докрутка заведомо выходит, не начав.
 
 import os
 import json
@@ -545,6 +548,32 @@ def _mark_resume_failed(archive_name: str, png_dir_rel: str, error: str) -> None
         app_logger.warning(f"Failed to mark PDF resume error for {archive_name}/{png_dir_rel}: {e}")
 
 
+def resumable_pdf_entry(archive_name: str, png_dir_rel: str) -> tuple[dict, Path] | None:
+    """
+    Предусловия докрутки PDF — те же, что у поля rendering в /pages.
+    Без побочных эффектов: lock создал бы директорию кеша.
+
+    Args:
+        archive_name: имя архива (директория кеша)
+        png_dir_rel: путь PNG-директории внутри кеша архива (posix)
+
+    Returns:
+        (запись PDF из meta, путь исходника) или None, если докручивать не из чего:
+        нет или невалидна meta, запись не partial, исходника нет на диске
+    """
+    meta = read_meta(archive_name)
+    if meta is None or not is_cache_valid_from_meta(meta):
+        return None
+    entry = find_pdf_entry(meta, png_dir_rel)
+    if entry is None or entry.get("status") != CACHE_FILE_STATUS_PARTIAL:
+        return None
+    source_path = Path(meta["source"]["path"])
+    if not source_path.exists():
+        # is_cache_valid_from_meta считает кеш удалённого источника валидным, но рендерить не из чего
+        return None
+    return entry, source_path
+
+
 async def resume_pdf_conversion(archive_name: str, png_dir_rel: str) -> None:
     """
     Докручивает PDF, поставленный на паузу (status=partial в _meta.json), с недостающих страниц
@@ -558,16 +587,10 @@ async def resume_pdf_conversion(archive_name: str, png_dir_rel: str) -> None:
         png_dir_rel: путь PNG-директории внутри кеша архива (posix)
     """
     # Шаг 1: есть что докручивать? (без побочных эффектов — lock создал бы директорию кеша)
-    meta = read_meta(archive_name)
-    if meta is None or not is_cache_valid_from_meta(meta):
+    resumable = resumable_pdf_entry(archive_name, png_dir_rel)
+    if resumable is None:
         return
-    entry = find_pdf_entry(meta, png_dir_rel)
-    if entry is None or entry.get("status") != CACHE_FILE_STATUS_PARTIAL:
-        return
-    source_path = Path(meta["source"]["path"])
-    if not source_path.exists():
-        # is_cache_valid_from_meta считает кеш удалённого источника валидным, но рендерить не из чего
-        return
+    entry, source_path = resumable
     # Гистерезис: впереди от просматриваемой страницы готова половина окна и позади нет дырок — ждём.
     # Без него листание запускало бы докрутку на каждую страницу: lock, ensure_cache_space,
     # перераспаковка PDF из ZIP. Дырки позади want заполняет один запуск целиком

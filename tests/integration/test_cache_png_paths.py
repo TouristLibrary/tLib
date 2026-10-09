@@ -1,4 +1,4 @@
-# Version 2.2 - 07.10.2026 06:09:21 GMT
+# Version 2.3 - 09.10.2026 10:20:00 GMT
 # Тесты безопасности путей cache_router и png_viewer_router (этап 4)
 # Описание: Проверяет, что traverse-векторы в archive_name, body.path и dir_path
 #           корректно отклоняются (400), а легитимные пути работают (не 400/500).
@@ -21,6 +21,7 @@
 #      «PDF page wait» с waited_ms и ready; готовая директория и готовая want — без ожидания.
 # 2.1: test_pages_on_partial_dir_resumes_conversion без long-poll (WAIT=0) — проверяет докрутку, не ожидание.
 # 2.2: поле rendering в /pages — идёт подготовка архива или нужна докрутка по гистерезису (needs_resume);
+# 2.3: rendering=false и докрутка не ставится, если исходника нет, запись не partial или нет meta.
 #      готовая директория и директория без маркера — false.
 
 from __future__ import annotations
@@ -545,6 +546,29 @@ class TestConvertWhileWatching:
 
         assert resp.status_code == 200, resp.text
         assert resp.json()["rendering"] is expected
+
+    @pytest.mark.parametrize("case", ["source_missing", "entry_not_partial", "no_meta"])
+    def test_pages_rendering_false_when_resume_cannot_start(self, app_client, tmp_dirs, resume_calls,
+                                                            monkeypatch, case):
+        """Докрутка заведомо не стартует — вьюер не опрашивает: rendering=false, задача не ставится.
+        Страницы want нет, раньше needs_resume отвечал бы true."""
+        monkeypatch.setattr(png_viewer_router_module, "PNG_PAGES_WAIT_SECONDS", 0)
+        _make_partial_cache(tmp_dirs["data"], tmp_dirs["cache"], "00001-TST")
+        meta_path = tmp_dirs["cache"] / "00001-TST" / "_meta.json"
+        if case == "source_missing":
+            (tmp_dirs["data"] / "00001-TST.zip").unlink()
+        elif case == "entry_not_partial":
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["files"][0]["status"] = "complete"
+            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        else:
+            meta_path.unlink()
+
+        resp = app_client.get("/api/png/00001-TST/dir1/report-png/pages?want=2")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["rendering"] is False
+        assert resume_calls == []
 
     def test_pages_rendering_false_without_missing_pages(self, app_client, tmp_dirs):
         """Готовая директория и директория без маркера _pages_total.txt — рисовать нечего."""

@@ -1,8 +1,10 @@
-# Version 2.9 - 07.10.2026 06:05:54 GMT
+# Version 3.0 - 09.10.2026 10:20:00 GMT
 # PNG Viewer Router для TlibWebApp
 # Описание: API endpoints для PNG viewer. Предоставляет листинг PNG директорий в data.cache
 #           и списки PNG файлов для просмотра. Используется embedded-вьюером /png-viewer.
 #           Логика resolve переехала в единый cache_router POST /resolve.
+# 3.0: rendering=false, если докрутка не может стартовать: нет или невалидна meta, запись не partial,
+#      исходника нет (resumable_pdf_entry). Иначе вьюер опрашивал бы /pages, когда рисовать не из чего.
 # 2.9: поле rendering в ответе /pages — сервер рисует для want: идёт конвертация архива или нужна
 #      докрутка (cache_watch.needs_resume, гистерезис resume_pdf_conversion). Вьюер опрашивает, только
 #      пока rendering=true, иначе — при смене страницы: забытая вкладка не шлёт heartbeat всю ночь.
@@ -44,7 +46,9 @@ from config import (
 
 # Импорт сервисов кеша: heartbeat просмотра и докрутка частичной конвертации
 from services.cache.cache_watch import touch_watch, read_pages_total, is_partial, count_pngs, needs_resume
-from services.cache.cache_prepare_service import is_preparing, read_prepare_status, resume_pdf_conversion
+from services.cache.cache_prepare_service import (
+    is_preparing, read_prepare_status, resume_pdf_conversion, resumable_pdf_entry,
+)
 from services.cache.cache_service import generate_png_filename
 
 # Импорт канонического валидатора путей
@@ -272,7 +276,11 @@ async def get_pages(
         # Heartbeat просмотра: конвертер PDF работает, пока директорию смотрят; заодно LRU-метка архива
         touch_watch(full_path, want if want is not None and want >= 1 else None, cache_root / archive_name)
         partial = is_partial(full_path)
-        if partial and not is_preparing(archive_name):
+        # При идущей подготовке meta ещё может не быть — рисует она, а не докрутка.
+        # resumable — докрутка вообще может стартовать (meta, partial, исходник на месте)
+        preparing = is_preparing(archive_name)
+        resumable = partial and not preparing and resumable_pdf_entry(archive_name, png_dir_rel) is not None
+        if resumable:
             # Докрутка стартует сейчас, а не после ответа: иначе рендер want начался бы на тик позже,
             # а long-poll ниже ждал бы страницу, которую никто не рисует. sleep(0) отдаёт задаче
             # управление до ожидания — она успевает решить, докручивать ли, и записать _prepare.json
@@ -286,10 +294,12 @@ async def get_pages(
 
         # Читатель ждёт: вьюер показывает «Страница N подготавливается…». Long-poll: отвечаем, как
         # только PNG want появился, — читатель видит страницу в момент рендера, а не на следующем
-        # опросе. converting — PDF архива, который рендерится к началу ожидания: этот же — ждём
+        # опросе. Ждать есть смысл, только если страницу кто-то рисует (подготовка или докрутка, которая
+        # может стартовать) — иначе 1,5 с держались бы ради PNG, которого не будет.
+        # converting — PDF архива, который рендерится к началу ожидания: этот же — ждём
         # рендер, другой — конкуренция PDF одного архива, пусто — докрутка не идёт.
         # _prepare.json читается, только пока страницы нет
-        if partial and pages_total and want is not None and 1 <= want <= pages_total:
+        if (preparing or resumable) and partial and pages_total and want is not None and 1 <= want <= pages_total:
             want_png = full_path / generate_png_filename(pdf_stem, want - 1)
             if not want_png.exists():
                 converting = read_prepare_status(archive_name).get("converting_path", "")
@@ -316,7 +326,7 @@ async def get_pages(
         # у resume_pdf_conversion. Иначе вьюер замолкает до смены страницы, и забытая вкладка не шлёт
         # heartbeat раз в 2 с всю ночь. Heartbeat этого запроса уже записан — правило считается для его want
         rendering = (pages_total is not None and len(pages) < pages_total
-                     and (is_preparing(archive_name) or needs_resume(full_path, pdf_stem, pages_total)))
+                     and (preparing or (resumable and needs_resume(full_path, pdf_stem, pages_total))))
 
         response_data = {
             'pages': pages,
