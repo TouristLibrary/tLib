@@ -18,9 +18,12 @@ pdf-отчёты этим эндпоинтом не покрываются.
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 import httpx
+
+from _constants import CP866_REPORT
 
 
 # Символы блочной графики CP437 (признак кракозябр при неверном декодировании)
@@ -85,6 +88,32 @@ def test_contents_no_macos_metadata_files(archive_client: httpx.Client, archive_
         name = item["name"]
         assert "__MACOSX/" not in name, f"Метафайл macOS в списке: {name!r}"
         assert not name.startswith("._"), f"Dot-underscore файл в списке: {name!r}"
+
+
+@pytest.fixture(scope="session")
+def cp866_archive_name(archive_client: httpx.Client) -> str:
+    """
+    Архив с именами файлов в CP866 (без UTF-8 флага в zip). Посевной 1-TST записан в UTF-8
+    и декодирование CP866 не проверяет. Если отчёта на стенде нет — тест пропускается.
+    """
+    probe = archive_client.get(f"/api/archive/{CP866_REPORT}/contents")
+    if probe.status_code != 200:
+        pytest.skip(
+            f"СИД ОТСУТСТВУЕТ: {CP866_REPORT} — /contents вернул {probe.status_code}. "
+            "Засейте фикстуру через File Watcher (data.up/20_go/)."
+        )
+    return CP866_REPORT
+
+
+def test_contents_cp866_filenames_decoded(archive_client: httpx.Client, cp866_archive_name: str) -> None:
+    resp = archive_client.get(f"/api/archive/{cp866_archive_name}/contents")
+    assert resp.status_code == 200, resp.text
+    names = [item["name"] for item in resp.json().get("files", [])]
+    assert names, "Список файлов пустой"
+    for name in names:
+        assert not _has_mojibake(name), f"Кракозябры в имени файла: {name!r}"
+    assert any(re.search("[А-Яа-яЁё]", name) for name in names), f"Нет кириллицы в именах: {names!r}"
+    assert any(name.lower().endswith(".plt") for name in names), f"Нет трека .plt: {names!r}"
 
 
 # ---------------------------------------------------------------------------
