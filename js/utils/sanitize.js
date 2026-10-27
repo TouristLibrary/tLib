@@ -8,8 +8,8 @@ import { CONSTANTS } from '../config/constants.js';
 // Разрешённые URL схемы для защиты от XSS
 const ALLOWED_URL_SCHEMES = ['http:', 'https:'];
 
-// Разрешённые origins для iframe (nakarte.me)
-const ALLOWED_IFRAME_ORIGINS = ['https://nakarte.me'];
+// Разрешённые origins для внешних iframe; должен совпадать с frame-src в config/security.py
+const ALLOWED_IFRAME_ORIGINS = ['https://nakarte.me', 'https://kartoid.com'];
 
 /**
  * Экранирует HTML-символы в строке для безопасной вставки в DOM
@@ -114,7 +114,7 @@ export function validateResourceUrl(url, context = CONSTANTS.VALIDATION_CONTEXTS
         
         // Проверка origin в зависимости от контекста
         if (context === CONSTANTS.VALIDATION_CONTEXTS.IFRAME_NAKARTE) {
-            // Для iframe nakarte.me разрешаем только https://nakarte.me
+            // Для внешних iframe разрешаем только origins из ALLOWED_IFRAME_ORIGINS
             if (ALLOWED_IFRAME_ORIGINS.includes(parsed.origin)) {
                 return { valid: true, url: parsed.href };
             }
