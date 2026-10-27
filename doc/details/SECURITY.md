@@ -117,6 +117,8 @@ HTTP заголовки безопасности для всех ответов.
 CSP_POLICY = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; ..."
 ```
 
+**Внешние фреймы (`frame-src`):** `https://nakarte.me` (вкладка «Треки») и `https://kartoid.com` (вкладка «Карта 3D»). Обоим уходит только ссылка на готовый файл в `/cache/`: nakarte получает её в query (`nktu=`), Kartoid — в hash вместе с публичными полями отчёта. Файл забирает сервер внешнего сервиса (у nakarte — `proxy.nakarte.me`, у Kartoid — прокси по таблице хостов: прод `kartoid.com/tlib/…`, стенд `kartoid.com/tlib-stand/…`), поэтому CORS для них не включён и не нужен: `connect-src 'self' blob:`, браузер страницы Kartoid наши ответы прочитать не может. У iframe нет `allow` и `sandbox`. Адрес фрейма собирается из констант (`js/config/api.config.js`), данные отчёта попадают только в hash. Список origin продублирован в `ALLOWED_IFRAME_ORIGINS` (`js/utils/sanitize.js`): при правке `frame-src` менять оба места. При смене домена библиотеки Kartoid нужно предупредить заранее: таблица у него по хосту.
+
 **SEO: X-Robots-Tag** (`middlewares/security_headers.py`):
 
 `SecurityHeadersMiddleware` добавляет `X-Robots-Tag: noindex, nofollow` для:
