@@ -60,7 +60,7 @@ function buildNakarteViewerHtml({ trackUrl, trackName, archiveName, isPlainMode,
  * @param {object[]} files
  * @returns {string|null}
  */
-function getGpsAllTracksUrl(files, archiveName) {
+export function getGpsAllTracksUrl(files, archiveName) {
     if (files.length <= 1 || !archiveName) return null;
     return `/cache/${archiveName}/${archiveName}-geo.zip`;
 }

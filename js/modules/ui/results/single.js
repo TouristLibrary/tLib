@@ -1,5 +1,5 @@
 // Описание: Оркестратор единственного результата поиска. Делегирует рендеринг/обработку
-//           viewer'ов (PDF/Треки/Изображения) соответствующим стратегиям через реестр.
+//           viewer'ов (PDF/Треки/Карта/Изображения) соответствующим стратегиям через реестр.
 //           Применяет escapeHtml для защиты от DOM-XSS при вставке данных из БД.
 
 import { CONSTANTS, TAB_IDS } from '../../../config/constants.js';
@@ -25,6 +25,7 @@ import {
 import * as pdfViewer from './viewers/pdfViewer.js';
 import * as imageViewer from './viewers/imageViewer.js';
 import * as trackViewer from './viewers/trackViewer.js';
+import * as kartoidViewer from './viewers/kartoidViewer.js';
 
 // =============================================================================
 // VIEWER STRATEGY REGISTRY
@@ -42,6 +43,7 @@ const VIEWER_BY_TAB = {
     [TAB_IDS.PDF]: pdfViewer,
     [TAB_IDS.IMG]: imageViewer,
     [TAB_IDS.GEO]: trackViewer,
+    [TAB_IDS.MAP]: kartoidViewer,
 };
 
 // =============================================================================
@@ -320,7 +322,7 @@ export class SingleResultsRenderer {
 
     /**
      * Генерирует табы с файлами для единственного результата.
-     * Делегирует рендеринг file-list и viewer-контейнеров стратегиям через VIEWER_STRATEGIES.
+     * Делегирует рендеринг file-list и viewer-контейнеров стратегиям через VIEWER_BY_TAB.
      * @param {object} row
      * @param {object} archiveData - {files, isZip, isPdf, localFileName, hasFile, fileStatus}
      * @param {string|number} shifr
@@ -388,6 +390,13 @@ export class SingleResultsRenderer {
                 .map(([id, cat]) => ({ id, ...cat })),
         ];
 
+        const hasKartoidTracks = categories[2].files.some(file =>
+            CONSTANTS.FILE_EXTENSIONS.KARTOID_TRACKS.includes(file.name.toLowerCase().split('.').pop().trim()));
+        if (hasKartoidTracks) {
+            const geoIndex = nonEmptyCategories.findIndex(cat => cat.id === '2');
+            nonEmptyCategories.splice(geoIndex + 1, 0, { id: '5', name: CONSTANTS.TABS.CATEGORY_NAMES[5], files: categories[2].files });
+        }
+
         const archiveNameAttr = localFileName ? ` data-archive-name="${escapeAttribute(localFileName)}"` : '';
         let html = `<div class="tabs-container"${archiveNameAttr}>`;
 
@@ -402,7 +411,6 @@ export class SingleResultsRenderer {
         const isPlainMode = document.documentElement.classList.contains(CONSTANTS.CSS_CLASSES.PLAIN_MODE);
 
         nonEmptyCategories.forEach((cat, index) => {
-            const catId = parseInt(cat.id);
             const activeClass = index === 0 ? ' active' : '';
             html += `<div class="tab-content${activeClass}" id="tab-${cat.id}">`;
 
@@ -412,8 +420,8 @@ export class SingleResultsRenderer {
                 return;
             }
 
-            const strategy = VIEWER_STRATEGIES[catId];
-            const strategyCtx = { shifr, dopShifr, localFileName, isZip, archiveName: localFileName || '', isPlainMode };
+            const strategy = VIEWER_BY_TAB[`tab-${cat.id}`];
+            const strategyCtx = { shifr, dopShifr, localFileName, isZip, archiveName: localFileName || '', isPlainMode, row };
 
             html += '<div class="file-list-inline">';
             if (strategy) {
@@ -519,7 +527,7 @@ export class SingleResultsRenderer {
 
     /**
      * Применяет состояние вкладок/файлов из hash URL к UI единственного результата.
-     * Поддерживает: #tab=pdf|geo|img|etc[&file=...][&p=...]
+     * Поддерживает: #tab=pdf|geo|img|etc|map[&file=...][&p=...]
      * Делегирует applyHashState стратегии через VIEWER_BY_TAB.
      */
     static applyViewStateFromHash() {

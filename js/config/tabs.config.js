@@ -10,7 +10,8 @@ export const TAB_IDS = deepFreeze({
     PDF:   'tab-1',
     GEO:   'tab-2',
     IMG:   'tab-3',
-    ETC:   'tab-4'
+    ETC:   'tab-4',
+    MAP:   'tab-5'
 });
 
 /**
@@ -21,7 +22,8 @@ export const TAB_TOKENS = deepFreeze({
     PDF:   'pdf',
     GEO:   'geo',
     IMG:   'img',
-    ETC:   'etc'
+    ETC:   'etc',
+    MAP:   'map'
 });
 
 /**
@@ -32,7 +34,8 @@ const TOKEN_BY_ID = {
     [TAB_IDS.PDF]:   TAB_TOKENS.PDF,
     [TAB_IDS.GEO]:   TAB_TOKENS.GEO,
     [TAB_IDS.IMG]:   TAB_TOKENS.IMG,
-    [TAB_IDS.ETC]:   TAB_TOKENS.ETC
+    [TAB_IDS.ETC]:   TAB_TOKENS.ETC,
+    [TAB_IDS.MAP]:   TAB_TOKENS.MAP
 };
 
 /**
@@ -48,5 +51,5 @@ const ID_BY_TOKEN = Object.fromEntries(
 export const TABS = deepFreeze({
     TOKEN_BY_ID,
     ID_BY_TOKEN,
-    CATEGORY_NAMES: ['Маршрут', 'PDF', 'Треки', 'Изображения', 'Прочее']
+    CATEGORY_NAMES: ['Маршрут', 'PDF', 'Треки', 'Изображения', 'Прочее', 'Карта 3D']
 });

@@ -16,9 +16,11 @@ export const FILE_CATEGORIES = deepFreeze({
  * Расширения файлов
  * Примечание: GPS_TRACKS удален - используется serverConfig.extensions.gpsTracks
  * Примечание: IMAGES удален - используется serverConfig.extensions.images
+ * Примечание: KARTOID_TRACKS - с какими треками есть вкладка «Карта 3D» (их читает фрейм Kartoid)
  */
 export const FILE_EXTENSIONS = deepFreeze({
-    PDF: ['pdf']
+    PDF: ['pdf'],
+    KARTOID_TRACKS: ['gpx', 'kml', 'kmz']
 });
 
 /**

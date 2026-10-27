@@ -30,7 +30,9 @@ export const API = deepFreeze({
 export const EXTERNAL_URLS = deepFreeze({
     NAKARTE_BASE: 'https://nakarte.me/',
     NAKARTE_TRACK_PREFIX: 'https://nakarte.me/#nktu=',
-    NAKARTE_IFRAME_PARAMS: '&min=1/1/1/1'   // параметры минимизации для iframe
+    NAKARTE_IFRAME_PARAMS: '&min=1/1/1/1',  // параметры минимизации для iframe
+    KARTOID_TRACK: 'https://kartoid.com/track',
+    KARTOID_MAP: 'https://kartoid.com/map/'
 });
 
 /**

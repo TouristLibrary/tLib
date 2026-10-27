@@ -39,6 +39,14 @@ def test_csp_header_present(client: httpx.Client, endpoint: str) -> None:
     )
 
 
+def test_csp_frame_src_allows_kartoid(client: httpx.Client) -> None:
+    resp = client.get("/")
+    value = resp.headers.get("content-security-policy", "")
+    assert re.search(r"frame-src [^;]*https://kartoid\.com", value), (
+        f"CSP frame-src expected to allow https://kartoid.com, got '{value}'"
+    )
+
+
 def test_hsts_header(client: httpx.Client) -> None:
     resp = client.get("/health")
     value = resp.headers.get("strict-transport-security", "")
