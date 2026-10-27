@@ -46,6 +46,7 @@ npm run test:critical
 npm run test:security
 npm run test:search
 npm run test:report
+npm run test:kartoid
 npm run test:navigation
 npm run test:responsive
 npm run test:performance

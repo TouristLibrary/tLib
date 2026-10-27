@@ -15,7 +15,8 @@
 |------|----------|--------|--------|
 | `e2e/critical-path.spec.js` | Загрузка, поиск, сортировка | 4 | `npm --prefix tests run test:critical` |
 | `e2e/search.spec.js` | Граничные случаи поиска, корректность отображения данных | 7 | `npm --prefix tests run test:search` |
-| `e2e/report.spec.js` | Карточка отчёта, табы, sidebar, скачивание | 8 | `npm --prefix tests run test:report` |
+| `e2e/report.spec.js` | Карточка отчёта, табы, sidebar, скачивание | 9 | `npm --prefix tests run test:report` |
+| `e2e/kartoid-map.spec.js` | Вкладка «Карта 3D»: место после «Треков», жест, откат на первый трек, причины отказа во фрейме | 7 | `npm --prefix tests run test:kartoid` |
 | `e2e/navigation.spec.js` | Редиректы, legacy URL, history API, plain-mode | 7 | `npm --prefix tests run test:navigation` |
 | `e2e/security.spec.js` | XSS input/output, SQL injection, DOM-проверки | 7 | `npm --prefix tests run test:security` |
 | `e2e/responsive.spec.js` | Mobile, Tablet, Desktop | 3 | `npm --prefix tests run test:responsive` |

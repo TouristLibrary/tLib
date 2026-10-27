@@ -54,58 +54,6 @@ test.describe('Report', () => {
     await expect(openBtn).toHaveCount(0);
   });
 
-  // Вкладка «Карта 3D» (kartoid.com): стоит сразу после «Треков»; кеш готовит resolve, а он ждёт жест,
-  // поэтому до жеста у фрейма нет src, а ссылка в редактор выключена. Содержимое фрейма не проверяем:
-  // Kartoid забирает файл через свой прокси по таблице хостов, со стенда по внутреннему адресу он его не получит.
-  test('Вкладка «Карта 3D»: после «Треков», фрейм и ссылка в редактор только после жеста', async ({ page }) => {
-    skipIfSeedMissing(test, '1-TST');
-    await page.goto('/?1-TST#tab=map', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.tab-button.active[data-tab="tab-5"]')).toBeVisible({ timeout: 15000 });
-
-    const labels = (await page.locator('.tabs-container .tab-button').allInnerTexts()).map((t) => t.trim());
-    const geoIndex = labels.findIndex((t) => t.startsWith('Треки'));
-    expect(geoIndex, labels.join(' | ')).toBeGreaterThanOrEqual(0);
-    expect(labels[geoIndex + 1], labels.join(' | ')).toMatch(/^Карта 3D/);
-
-    // До жеста: фрейм без src, ссылка в редактор выключена
-    const frame = page.locator('#tab-5 iframe');
-    const editorLink = page.locator('#tab-5 a[href^="https://kartoid.com/map/"]');
-    await page.waitForTimeout(3000);
-    await expect(frame).toHaveAttribute('data-pending-url', /^https:\/\/kartoid\.com\/track#/);
-    await expect(frame).not.toHaveAttribute('src', /.+/);
-    await expect(editorLink).toHaveAttribute('data-pending-track', 'kartoid');
-
-    await page.mouse.move(100, 100);
-    await page.mouse.move(200, 200);
-    await expect(frame).toHaveAttribute('src', /^https:\/\/kartoid\.com\/track#/, { timeout: 30000 });
-    await expect(editorLink).not.toHaveAttribute('data-pending-track', 'kartoid');
-
-    // Одна ссылка на готовый файл в /cache/, всё в hash, без query и без fail
-    const origin = new URL(page.url()).origin;
-    const geoZip = `${origin}/cache/00001-TST/00001-TST-geo.zip`;
-    const frameUrl = new URL(await frame.getAttribute('src'));
-    expect(frameUrl.search).toBe('');
-    const frameParams = new URLSearchParams(frameUrl.hash.slice(1));
-    expect(frameParams.get('p')).toBe(geoZip);
-    expect(frameParams.has('fail')).toBe(false);
-
-    const editorUrl = new URL(await editorLink.getAttribute('href'));
-    expect(editorUrl.search).toBe('');
-    expect(new URLSearchParams(editorUrl.hash.slice(1)).get('p')).toBe(geoZip);
-
-    // Права фрейма не расширены
-    await expect(frame).not.toHaveAttribute('allow', /.*/);
-    await expect(frame).not.toHaveAttribute('sandbox', /.*/);
-  });
-
-  test('Отчёт без файла: вкладки «Карта 3D» нет', async ({ page }) => {
-    skipIfSeedMissing(test, '842-TLIB');
-    await page.goto('/?842-TLIB', { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('.single-result-formatted')).toContainText('#842-TLIB', { timeout: 15000 });
-    await expect(page.locator('.tab-button[data-tab="tab-5"]')).toHaveCount(0);
-    await expect(page.locator('iframe[src*="kartoid.com"], iframe[data-pending-url*="kartoid.com"]')).toHaveCount(0);
-  });
-
   test('Очистка формы', async ({ page }) => {
     await gotoMainReady(page);
     await page.locator('input[name="Шифр"]').fill('123');

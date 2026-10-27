@@ -20,6 +20,24 @@ const SEEDS = [
     },
   },
   {
+    id: '3287-STK',
+    // zip без треков (PDF и JPG): вкладок «Треки» и «Карта 3D» нет
+    check: async (ctx, baseURL) => {
+      const r = await ctx.get(`${baseURL}/api/archive/03287-STK/contents`, { timeout: 10000 })
+        .catch(() => null);
+      return r && r.ok();
+    },
+  },
+  {
+    id: '463-TLIB',
+    // треки только PLT и WPT, имена файлов в архиве в CP866: «Треки» есть, «Карты 3D» нет
+    check: async (ctx, baseURL) => {
+      const r = await ctx.get(`${baseURL}/api/archive/00463-TLIB/contents`, { timeout: 10000 })
+        .catch(() => null);
+      return r && r.ok();
+    },
+  },
+  {
     id: '842-TLIB',
     // может быть PDF — проверяем наличие записи в БД через поиск
     check: async (ctx, baseURL) => {
