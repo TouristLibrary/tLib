@@ -1,25 +1,79 @@
 // Описание: Объединяет рендер результатов поиска. Выбирает режим таблицы или карточки одного результата,
 //           и проксирует методы таблицы/карточки, сохраняя публичный API ResultsRenderer.
+//           Пустая выдача перечисляет заполненные поля поиска: иначе не видно, какое условие обнулило результат.
 
-import { CONSTANTS, TAB_IDS } from '../../../config/constants.js';
+import { CONSTANTS, MONTHS_RU, TAB_IDS } from '../../../config/constants.js';
+import { getServerConfig } from '../../../services/serverConfigService.js';
 import { DOMUtils } from '../utils.js';
 import { TableResultsRenderer } from './table.js';
 import { SingleResultsRenderer } from './single.js';
 
 export class ResultsRenderer {
     /**
-     * Показывает вместо результатов одну строку сообщения — разметка пустой выдачи.
-     * Текст ставится через textContent: разметка из текста не исполняется
+     * Показывает вместо результатов сообщение — разметка пустой выдачи.
+     * Текст ставится через textContent: разметка из текста не исполняется.
+     * lines — дополнительные строки под основной (условия поиска и подсказка)
      * @param {string} text - Текст сообщения
+     * @param {string[]} [lines] - Строки под основным текстом
      */
-    static renderMessage(text) {
+    static renderMessage(text, lines = []) {
         const resultsDiv = DOMUtils.getElement(CONSTANTS.SELECTORS.RESULTS);
         if (!resultsDiv) {
             console.error('Элемент результатов не найден');
             return;
         }
-        resultsDiv.innerHTML = '<div class="single-result-formatted"><div class="single-result-field"><span></span></div></div>';
-        resultsDiv.querySelector('.single-result-field span').textContent = text;
+        resultsDiv.innerHTML = '<div class="single-result-formatted"></div>';
+        const box = resultsDiv.querySelector('.single-result-formatted');
+        for (const line of [text, ...lines]) {
+            const field = document.createElement('div');
+            field.className = 'single-result-field';
+            const span = document.createElement('span');
+            span.textContent = line;
+            field.appendChild(span);
+            box.appendChild(field);
+        }
+    }
+
+    /**
+     * Строки под «Ничего не найдено»: заполненные поля формы в её порядке.
+     * Пустая форма и отсутствие formData (очистка результатов) строк не дают.
+     * Подсказка убрать часть условий — только когда полей два или больше
+     * @param {FormData|null} formData - форма, ушедшая в поиск
+     * @returns {string[]}
+     */
+    static _describeConditions(formData) {
+        if (!formData || typeof formData.get !== 'function') return [];
+
+        const labels = CONSTANTS.MESSAGES.SEARCH_FIELD_LABELS;
+        const noDop = getServerConfig().specialValues.noDopShifr;
+        const maxLen = CONSTANTS.LIMITS.NO_RESULTS_VALUE_MAX_LENGTH;
+        const parts = [];
+
+        for (const field of Object.keys(labels)) {
+            const value = String(formData.get(field) ?? '').trim();
+            if (!value) continue;
+
+            if (field === 'ДопШифр' && value === noDop) {
+                parts.push(CONSTANTS.MESSAGES.DOP_SHIFR_NONE_LABEL);
+                continue;
+            }
+
+            let shown = value;
+            if (field === 'МесяцС' || field === 'МесяцПо') {
+                shown = MONTHS_RU[Number(value) - 1] || value;
+            } else if (value.length > maxLen) {
+                shown = `${value.slice(0, maxLen)}…`;
+            }
+            parts.push(`${labels[field]}: ${shown}`);
+        }
+
+        if (!parts.length) return [];
+
+        const lines = [
+            CONSTANTS.MESSAGES.NO_RESULTS_CONDITIONS.replace('{conditions}', parts.join('; '))
+        ];
+        if (parts.length >= 2) lines.push(CONSTANTS.MESSAGES.NO_RESULTS_HINT);
+        return lines;
     }
 
     /**
@@ -43,9 +97,10 @@ export class ResultsRenderer {
      * @param {Array} rows - Массив результатов поиска
      * @param {object} [options]
      * @param {boolean} [options.byShifr] - отчёт найден запасным поиском по шифру: над карточкой пометка
+     * @param {FormData|null} [options.formData] - форма поиска: пустая выдача перечисляет её поля
      * @returns {Promise<void>}
      */
-    static async render(rows, { byShifr = false } = {}) {
+    static async render(rows, { byShifr = false, formData = null } = {}) {
         console.log(`ResultsRenderer.render: получено ${rows.length} результатов для отображения`);
         
         const resultsDiv = DOMUtils.getElement(CONSTANTS.SELECTORS.RESULTS);
@@ -61,7 +116,10 @@ export class ResultsRenderer {
 
         if (!rows.length) {
             console.log('ResultsRenderer.render: результатов нет, показываем сообщение');
-            ResultsRenderer.renderMessage(CONSTANTS.MESSAGES.NO_RESULTS);
+            ResultsRenderer.renderMessage(
+                CONSTANTS.MESSAGES.NO_RESULTS,
+                ResultsRenderer._describeConditions(formData)
+            );
             return;
         }
 

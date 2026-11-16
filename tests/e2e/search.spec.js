@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { gotoMainReady } = require('./helpers');
+const { gotoMainReady, selectDopShifr } = require('./helpers');
 
 test.describe('Search', () => {
   test.setTimeout(120000);
@@ -19,6 +19,17 @@ test.describe('Search', () => {
     await page.locator('input[name="Шифр"]').fill('99999');
     await page.locator('#searchButton').click();
     await expect(page.getByText('Ничего не найдено')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('#results')).toContainText('Шифр: 99999');
+  });
+
+  test('Пустая выдача называет «без доп.шифра»', async ({ page }) => {
+    await gotoMainReady(page);
+    await selectDopShifr(page, 'нет');
+    await page.locator('input[name="Шифр"]').fill('99999');
+    await page.locator('#searchButton').click();
+    const results = page.locator('#results');
+    await expect(results).toContainText('без доп.шифра', { timeout: 10000 });
+    await expect(results).toContainText('Попробуйте убрать часть условий.');
   });
 
   test('Отрицательный год', async ({ page }) => {
