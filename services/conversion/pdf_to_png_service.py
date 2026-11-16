@@ -2,7 +2,8 @@
 # Описание: Конвертация PDF файлов в PNG страницы.
 #           Использует PyMuPDF (fitz) для рендеринга PDF страниц.
 #           Рендер и запись PNG — в процессе-воркере (pdf_render_worker), по одной странице:
-#           PyMuPDF держит GIL весь рендер, в потоке главного процесса он морил бы цикл событий.
+#           тот же воркер уменьшает картинки архива. PyMuPDF держит GIL весь вызов,
+#           в потоке главного процесса он морил бы цикл событий.
 #           Пиковое потребление RAM — одна страница, а не весь документ.
 #           Lock на уровне архива обеспечивается cache_prepare_service.
 #           Конфигурация через PDF_TO_PNG_* параметры в config.py.
@@ -112,8 +113,8 @@ _render_pool = None
 _render_pool_lock = threading.Lock()
 
 
-def _get_pool() -> ProcessPoolExecutor:
-    """Пул процессов-воркеров рендера (spawn — см. docstring pdf_render_worker)."""
+def get_render_pool() -> ProcessPoolExecutor:
+    """Пул процесса-воркера: страницы PDF и картинки архива (spawn — см. docstring pdf_render_worker)."""
     global _render_pool
     with _render_pool_lock:
         if _render_pool is None:
@@ -125,7 +126,7 @@ def _get_pool() -> ProcessPoolExecutor:
         return _render_pool
 
 
-def _reset_pool(pool: ProcessPoolExecutor) -> None:
+def reset_render_pool(pool: ProcessPoolExecutor) -> None:
     """
     Сломанный пул (воркер умер: segfault MuPDF, OOM killer) задач не принимает —
     следующий рендер создаст новый. Сбрасывается только этот пул: второй рендер-поток мог
@@ -195,7 +196,7 @@ def _convert_pdf_to_directory_sync(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    pool = _get_pool()
+    pool = get_render_pool()
     i = None
     try:
         page_count = pool.submit(pdf_render_worker.page_count, str(pdf_path)).result()
@@ -232,7 +233,7 @@ def _convert_pdf_to_directory_sync(
 
     except BrokenProcessPool:
         # Без retry: если страница роняет MuPDF, повтор уронил бы и новый воркер
-        _reset_pool(pool)
+        reset_render_pool(pool)
         log_with_data(logging.WARNING, "PDF render worker died (BrokenProcessPool), pool reset",
                       pdf=pdf_path.as_posix(), page=None if i is None else i + 1)
         raise

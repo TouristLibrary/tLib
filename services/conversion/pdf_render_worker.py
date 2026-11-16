@@ -1,8 +1,8 @@
 # PDF Render Worker для TlibWebApp
-# Описание: Функции процесса-воркера рендера PDF→PNG (ProcessPoolExecutor из pdf_to_png_service).
-#           PyMuPDF держит GIL весь get_pixmap/tobytes (~0,5–1,3 с на страницу): рендер в потоке
-#           главного процесса морит цикл событий, и запрос, которому нужны десятки проходов
-#           цикла (поиск, /pages, PNG), ждёт конца окна рендера. В отдельном процессе GIL свой.
+# Описание: Функции процесса-воркера (ProcessPoolExecutor из pdf_to_png_service): рендер PDF→PNG
+#           и оптимизация картинок архива. PyMuPDF держит GIL весь get_pixmap (~0,5–1,3 с на страницу,
+#           столько же на крупное фото): в потоке главного процесса поиск и /pages ждут конца вызова.
+#           В отдельном процессе GIL свой.
 #
 #           Модуль — лист: импортирует только stdlib и fitz. Никаких config/logging_config:
 #           logging_config при импорте открывает RotatingFileHandler, и второй процесс писал бы
@@ -17,10 +17,30 @@
 #           python -m uvicorn (имя uvicorn.__main__ spawn пропускает). При запуске python app.py
 #           ребёнок выполнил бы app.py как __mp_main__ — со всеми импортами и логгерами.
 
+import functools
 import os
+import shutil
 import signal
 
 import fitz  # PyMuPDF
+
+
+def _picklable_errors(fn):
+    """
+    Любую ошибку задачи отдаёт родителю как RuntimeError с типом и текстом исходной.
+
+    Исключения самого MuPDF (FzError*: «malloc failed» на странице огромного размера,
+    «unknown image file format») держат SWIG-объект и не проходят pickle: родитель получил бы
+    «cannot pickle 'SwigPyObject' object» вместо причины. Исходная трассировка уходит в лог
+    родителя как причина (from e): её текст concurrent.futures передаёт отдельно от исключения.
+    """
+    @functools.wraps(fn)
+    def wrapper(*args):
+        try:
+            return fn(*args)
+        except Exception as e:
+            raise RuntimeError(f"{type(e).__name__}: {e}") from e
+    return wrapper
 
 
 def ignore_stop_signals() -> None:
@@ -38,8 +58,9 @@ def ignore_stop_signals() -> None:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 
+@_picklable_errors
 def page_count(pdf_path: str) -> int:
-    """Число страниц PDF (исключение MuPDF уходит родителю через future)."""
+    """Число страниц PDF."""
     doc = fitz.open(pdf_path)
     try:
         return len(doc)
@@ -47,6 +68,7 @@ def page_count(pdf_path: str) -> int:
         doc.close()
 
 
+@_picklable_errors
 def render_page(pdf_path: str, page_index: int, out_path: str,
                 zoom: float, colorspace: str, alpha: bool) -> None:
     """
@@ -73,3 +95,42 @@ def render_page(pdf_path: str, page_index: int, out_path: str,
     with open(tmp_path, "wb") as f:
         f.write(png_data)
     os.replace(tmp_path, out_path)
+
+
+@_picklable_errors
+def optimize_image(source_path: str, output_path: str,
+                   max_width: int, max_height: int,
+                   jpeg_quality: int, as_png: bool) -> tuple[int, int, int, int, bool]:
+    """
+    Уменьшает растр до max_width×max_height либо копирует его без перекодирования.
+
+    В этом процессе, а не в потоке uvicorn: Pixmap и get_pixmap держат GIL, и поиск,
+    идущий в то же время, растягивался бы в сотни раз.
+    Каталог output_path создаёт родитель. Размеры — в пикселях, не в PDF-points.
+
+    Returns:
+        (src_w, src_h, dst_w, dst_h, copied). copied — файл скопирован байт в байт.
+    """
+    pix = fitz.Pixmap(source_path)
+    src_w, src_h = pix.width, pix.height
+    pix = None  # освобождаем память до копирования или ресайза
+
+    if src_w <= max_width and src_h <= max_height:
+        shutil.copyfile(source_path, output_path)
+        return src_w, src_h, src_w, src_h, True
+
+    # Масштаб по пикселям; matrix — через rect страницы, он в points
+    scale = min(max_width / src_w, max_height / src_h)
+    dst_w = max(1, round(src_w * scale))
+    dst_h = max(1, round(src_h * scale))
+
+    with fitz.open(source_path) as doc:
+        page = doc[0]
+        m = dst_w / page.rect.width
+        out = page.get_pixmap(matrix=fitz.Matrix(m, m), alpha=False)
+        if as_png:
+            out.save(output_path, "png")
+        else:
+            out.save(output_path, "jpeg", jpg_quality=jpeg_quality)
+
+    return src_w, src_h, dst_w, dst_h, False
