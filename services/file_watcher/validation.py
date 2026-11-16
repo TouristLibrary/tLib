@@ -11,6 +11,8 @@
 #             1) Размер сжатого файла (MAX_ARCHIVE_SIZE)
 #             2) Количество файлов в архиве (MAX_FILES_IN_ARCHIVE)
 #             3) Compression ratio - защита от Zip Bomb (MAX_COMPRESSION_RATIO)
+#             4) Заголовок каждой записи: Python сверяет имя с оглавлением и не берёт
+#                зашифрованный или неподдерживаемый метод сжатия
 #           Все функции - чистые, без побочных эффектов (side effects).
 
 import json
@@ -300,9 +302,11 @@ def validate_zip_file(zip_path: Path) -> Tuple[bool, str]:
     2. Количество файлов в архиве (MAX_FILES_IN_ARCHIVE)
     3. Суммарный размер распакованного содержимого (вычисляется из метаданных)
     4. Compression ratio - защита от Zip Bomb (MAX_COMPRESSION_RATIO)
-    5. Корректность ZIP файла (zipfile.BadZipFile)
+    5. Корректность ZIP файла (zipfile.BadZipFile), включая сверку имени
+       в оглавлении и в заголовке каждой записи
+    6. Архив не зашифрован и сжат способом, который умеет открыть сайт
     
-    ВАЖНО: Функция читает только метаданные ZIP (infolist), не распаковывая файлы.
+    ВАЖНО: Функция читает оглавление и заголовки записей, но не распаковывает содержимое.
     
     Args:
         zip_path: Путь к ZIP файлу
@@ -363,6 +367,22 @@ def validate_zip_file(zip_path: Path) -> Tuple[bool, str]:
                     
                     app_logger.warning(f"[FILE_WATCHER] {zip_path.name}: {error_msg}")
                     return False, error_msg
+
+            # Открытие записи читает только её заголовок. Расхождение имени с оглавлением —
+            # BadZipFile, его ловит общий обработчик ниже. Пароль и чужой метод сжатия
+            # Python сообщает отдельно: такие архивы сайт всё равно не распакует
+            try:
+                for info in info_list:
+                    with zf.open(info):
+                        pass
+            except RuntimeError:
+                error_msg = "Архив зашифрован: сайт такие ZIP не открывает"
+                app_logger.warning(f"[FILE_WATCHER] {zip_path.name}: {error_msg}")
+                return False, error_msg
+            except NotImplementedError:
+                error_msg = "Метод сжатия архива не поддерживается"
+                app_logger.warning(f"[FILE_WATCHER] {zip_path.name}: {error_msg}")
+                return False, error_msg
         
         # Все проверки пройдены
         app_logger.debug(

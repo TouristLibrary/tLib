@@ -123,6 +123,28 @@ class TestValidateZipFile:
         ok, msg = validate_zip_file(zp)
         assert ok, msg
 
+    def test_rar_signature_returns_false(self, tmp_path):
+        from services.file_watcher.validation import validate_zip_file
+        rar = tmp_path / "report.zip"
+        rar.write_bytes(b"Rar!\x1a\x07\x00")
+        ok, msg = validate_zip_file(rar)
+        assert not ok
+        assert "ZIP" in msg or "zip" in msg.lower()
+
+    def test_local_header_name_mismatch_returns_false(self, tmp_path):
+        """Имя в заголовке записи той же длины, но другое: Python отказывается открывать файл."""
+        from services.file_watcher.validation import validate_zip_file
+        zp = _make_zip(tmp_path, "mismatch.zip", {"report.txt": b"hello"})
+        data = bytearray(zp.read_bytes())
+        local = data.find(b"PK\x03\x04")
+        name_len = int.from_bytes(data[local + 26:local + 28], "little")
+        assert name_len > 0
+        data[local + 30] ^= 0x01
+        zp.write_bytes(data)
+        ok, msg = validate_zip_file(zp)
+        assert not ok
+        assert "differ" in msg or "заголов" in msg.lower() or "ZIP" in msg
+
 
 # ---------------------------------------------------------------------------
 # validate_archive_consistency

@@ -3,6 +3,8 @@
 
 import { getCurrentUser, requestLink, verifyCode, logout } from './services/authService.js';
 import { attachLogoutMenu } from './modules/logoutMenu.js';
+import { MESSAGES } from './config/messages.config.js';
+import { checkZipFile } from './modules/zipCheck.js';
 
 // ---------------------------------------------------------------------------
 // Состояние
@@ -22,6 +24,9 @@ let uploaderCheckTimer    = null;
 let codeOk            = false;  // Результат последней проверки уникальности кода
 let currentHasFile    = false;  // В режиме edit/edit_published: изначально есть файл
 let hiddenReportsOriginal = '';  // Исходный текст textarea «Скрытые отчёты» (для disabled кнопки)
+let fileCheckPending  = false; // Идёт чтение заголовков выбранного ZIP
+let fileCheckError    = '';    // Причина, почему выбранный ZIP грузить нельзя
+let fileCheckToken    = 0;     // Ответ проверки старого файла не затирает новый
 
 // Состояние блока «Загрузивший отчёт» (только для админов)
 let uploaderResolvedId  = null;   // id резолвленного пользователя, null = не резолвлен / очищен
@@ -635,7 +640,9 @@ function initFileWidget() {
     show($('file-pick'));
     $('file-info').textContent = '';
     $('f-file').value = '';
+    resetFileCheck();
     $('err-file').textContent = '';
+    $('f-file').classList.remove('error');
     updateActionBtns();
   });
 
@@ -644,7 +651,9 @@ function initFileWidget() {
     $('f-file').value = '';
     $('file-info').textContent = '';
     hide($('file-pick-clear'));
+    resetFileCheck();
     $('err-file').textContent = '';
+    $('f-file').classList.remove('error');
     updateActionBtns();
   });
 
@@ -658,9 +667,51 @@ function initFileWidget() {
       $('file-info').textContent = '';
       hide($('file-pick-clear'));
     }
+    void inspectPickedFile(f);
+  });
+}
+
+// Сбрасывает результат проверки ZIP. Токен растёт, чтобы опоздавший ответ не вернулся на форму
+function resetFileCheck() {
+  fileCheckToken += 1;
+  fileCheckPending = false;
+  fileCheckError = '';
+}
+
+// Читает заголовки ZIP и либо разрешает отправку, либо пишет причину под полем.
+// PDF не проверяется. Смена файла пока идёт чтение отменяет прежний результат
+async function inspectPickedFile(file) {
+  resetFileCheck();
+  const token = fileCheckToken;
+  $('f-file').classList.remove('error');
+  if (!file || !/\.zip$/i.test(file.name)) {
     $('err-file').textContent = '';
     updateActionBtns();
-  });
+    return;
+  }
+  fileCheckPending = true;
+  $('err-file').textContent = MESSAGES.UPLOAD_ZIP_CHECK.CHECKING;
+  updateActionBtns();
+  const message = await checkZipFile(file);
+  if (token !== fileCheckToken) return;
+  fileCheckPending = false;
+  fileCheckError = message;
+  $('err-file').textContent = message;
+  if (message) $('f-file').classList.add('error');
+  updateActionBtns();
+}
+
+// Выбранный ZIP ещё проверяется или уже отвергнут — отправлять его нельзя
+function zipBlocksSubmit() {
+  return fileCheckPending || !!fileCheckError;
+}
+
+// Повторная защита на отправке: кнопку уже выключила проверка, но submit мог прийти раньше ответа
+function refuseBadZip() {
+  if (!zipBlocksSubmit()) return false;
+  $('err-file').textContent = fileCheckError || MESSAGES.UPLOAD_ZIP_CHECK.CHECKING;
+  if (fileCheckError) $('f-file').classList.add('error');
+  return true;
 }
 
 // Определяет, есть ли файл для публикации (в любом из режимов)
@@ -684,14 +735,15 @@ function updateActionBtns() {
   const godOk     = god >= MIN_YEAR && god <= MAX_YEAR;
   const uploaderOk = uploaderValid; // false = поле заполнено, но пользователь не найден
 
+  const zipOk = !zipBlocksSubmit();
   if (formMode === 'new') {
     const file = !!$('f-file').files[0];
-    $('saveBtn').disabled = !(marshrut && godOk && file && codeOk && uploaderOk);
+    $('saveBtn').disabled = !(marshrut && godOk && file && codeOk && uploaderOk && zipOk);
   } else if (formMode === 'edit_published') {
-    $('saveBtn').disabled = !(marshrut && godOk && codeOk && hasFileForSubmit() && uploaderOk);
+    $('saveBtn').disabled = !(marshrut && godOk && codeOk && hasFileForSubmit() && uploaderOk && zipOk);
     // deleteReportBtn всегда активна в edit_published
   } else {
-    $('publishBtn').disabled = !(marshrut && godOk && codeOk && hasFileForSubmit() && uploaderOk);
+    $('publishBtn').disabled = !(marshrut && godOk && codeOk && hasFileForSubmit() && uploaderOk && zipOk);
     // rejectBtn всегда активна в edit
   }
 }
@@ -707,6 +759,7 @@ function resetFormToNew() {
   fileRemoved     = false;
   currentHasFile  = false;
   codeOk          = false;
+  resetFileCheck();
 
   $('form-title').textContent = 'Загрузка и изменение отчёта';
   $('edit-orig-id').value     = '';
@@ -834,6 +887,8 @@ async function enterEditMode(id, opts = {}) {
   $('f-file').value = '';
   $('file-info').textContent = '';
   hide($('file-pick-clear'));
+  resetFileCheck();
+  $('f-file').classList.remove('error');
   if (has_archive) {
     const archiveName = `${id}.${archive_ext || ''}`;
     $('file-current-name').textContent = archiveName;
@@ -1094,6 +1149,7 @@ async function doSubmitNew() {
   const notice = $('form-notice');
   hideNotice(notice);
 
+  if (refuseBadZip()) return;
   if (validateRequiredFields()) return;
 
   const file = $('f-file').files[0];
@@ -1149,6 +1205,7 @@ async function doPublish() {
   const notice = $('form-notice');
   hideNotice(notice);
 
+  if (refuseBadZip()) return;
   if (validateRequiredFields()) return;
 
   if (!hasFileForSubmit()) {
@@ -1279,6 +1336,8 @@ async function enterEditPublishedMode(id, opts = {}) {
   $('f-file').value = '';
   $('file-info').textContent = '';
   hide($('file-pick-clear'));
+  resetFileCheck();
+  $('f-file').classList.remove('error');
   if (has_archive) {
     const fileName = `${id}.${archive_ext || ''}`;
     const sizeStr  = data['РазмерАрхива'] ? ` (${formatBytes(data['РазмерАрхива'])})` : '';
@@ -1329,6 +1388,7 @@ async function doSubmitEdit() {
   const notice = $('form-notice');
   hideNotice(notice);
 
+  if (refuseBadZip()) return;
   if (validateRequiredFields()) return;
 
   if (!hasFileForSubmit()) {
