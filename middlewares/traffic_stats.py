@@ -1,7 +1,10 @@
 # Traffic Stats Middleware для TlibWebApp
 # Описание: Сбор статистики посещений сайта. Классифицирует запросы по категориям
-#           (search, report, download, api, page), считает уникальные IP по дням,
-#           популярные отчёты по скачиваниям и по просмотрам (уникальные IP).
+#           (search, report, download, api, page). Хиты, топы и уникальные IP людей
+#           считаются только по запросам с обычным User-Agent. Пустой UA и маркеры
+#           из BOT_UA_MARKERS — боты: в хиты и топы не попадают, уникальные IP ботов
+#           считаются отдельно. IP за сутки становится человеком, если хотя бы один
+#           его запрос не от бота. Ошибки 4xx/5xx пишутся и для ботов.
 #           Хранит in-memory счётчики, сбрасывает в stats.db каждые
 #           STATS_FLUSH_INTERVAL секунд. Данные старше STATS_RETENTION_DAYS
 #           удаляются автоматически. Статические ресурсы (JS/CSS/assets) не учитываются.
@@ -17,6 +20,7 @@ from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from config import (
+    BOT_UA_MARKERS,
     LOCAL_ARCHIVE_PATH,
     STATIC_DIRS,
     FAVICON_URL_PATH,
@@ -88,6 +92,14 @@ def _date_key(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d")
 
 
+def _is_bot(user_agent: str) -> bool:
+    """Пустой User-Agent и известные краулеры не считаются людьми."""
+    ua = user_agent.lower()
+    if not ua:
+        return True
+    return any(marker in ua for marker in BOT_UA_MARKERS)
+
+
 # ---------------------------------------------------------------------------
 # StatsCollector
 # ---------------------------------------------------------------------------
@@ -112,8 +124,10 @@ class StatsCollector:
         self._hourly_errors: dict[str, Counter] = defaultdict(Counter)
         # hourly_cached[hour] -> количество отчётов, добавленных в кэш
         self._hourly_cached: dict[str, int] = defaultdict(int)
-        # daily_ips[date] -> множество уникальных IP
+        # daily_ips[date] -> уникальные IP людей
         self._daily_ips: dict[str, set] = defaultdict(set)
+        # daily_bot_ips[date] -> уникальные IP, у которых за окно не было человеческих запросов
+        self._daily_bot_ips: dict[str, set] = defaultdict(set)
         # popular[date][report_id] -> количество скачиваний
         self._popular: dict[str, Counter] = defaultdict(Counter)
         # report_views[date][report_id] -> множество IP, просмотревших страницу отчёта
@@ -138,6 +152,7 @@ class StatsCollector:
             CREATE TABLE IF NOT EXISTS daily_ips (
                 date TEXT NOT NULL,
                 ip   TEXT NOT NULL,
+                bot  INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (date, ip)
             );
             CREATE TABLE IF NOT EXISTS daily_popular (
@@ -153,15 +168,25 @@ class StatsCollector:
                 PRIMARY KEY (date, report_id, ip)
             );
         """)
+        # База, созданная до колонки bot: CREATE TABLE IF NOT EXISTS её не добавит.
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(daily_ips)")}
+        if "bot" not in cols:
+            conn.execute(
+                "ALTER TABLE daily_ips ADD COLUMN bot INTEGER NOT NULL DEFAULT 0"
+            )
         conn.commit()
         conn.close()
 
     # ---- Запись события (вызывается из middleware) --------------------------
 
-    def record(self, path: str, ip: str, status: int, dt: datetime) -> None:
+    def record(self, path: str, ip: str, status: int, dt: datetime, is_bot: bool = False) -> None:
         """
         Фиксирует один запрос. Вызывается синхронно в asyncio event loop
         после получения ответа — блокировка не требуется.
+
+        is_bot=False по умолчанию: вызовы без признака остаются людьми.
+        Запрос бота не увеличивает хиты и топы. Если с этого IP за сутки уже был
+        человеческий запрос, IP не попадает и в боты.
         """
         category = _categorize(path)
         if category is None:
@@ -170,14 +195,19 @@ class StatsCollector:
         hour = _hour_key(dt)
         date = _date_key(dt)
 
-        self._hourly_hits[hour][category] += 1
-
         if status >= 500:
             self._hourly_errors[hour]["5xx"] += 1
         elif status >= 400:
             self._hourly_errors[hour]["4xx"] += 1
 
+        if is_bot:
+            if ip not in self._daily_ips[date]:
+                self._daily_bot_ips[date].add(ip)
+            return
+
+        self._hourly_hits[hour][category] += 1
         self._daily_ips[date].add(ip)
+        self._daily_bot_ips[date].discard(ip)
 
         if category == "download":
             rid = _report_id_from_path(path)
@@ -207,6 +237,7 @@ class StatsCollector:
             snapshot_errors       = self._hourly_errors
             snapshot_cached       = self._hourly_cached
             snapshot_ips          = self._daily_ips
+            snapshot_bot_ips      = self._daily_bot_ips
             snapshot_popular      = self._popular
             snapshot_report_views = self._report_views
 
@@ -214,13 +245,14 @@ class StatsCollector:
             self._hourly_errors = defaultdict(Counter)
             self._hourly_cached = defaultdict(int)
             self._daily_ips     = defaultdict(set)
+            self._daily_bot_ips = defaultdict(set)
             self._popular       = defaultdict(Counter)
             self._report_views  = defaultdict(lambda: defaultdict(set))
 
             await asyncio.get_event_loop().run_in_executor(
                 None, self._flush_sync,
                 snapshot_hits, snapshot_errors, snapshot_cached,
-                snapshot_ips, snapshot_popular, snapshot_report_views,
+                snapshot_ips, snapshot_bot_ips, snapshot_popular, snapshot_report_views,
             )
 
     def _flush_sync(
@@ -229,6 +261,7 @@ class StatsCollector:
         errors: dict,
         cached: dict,
         ips: dict,
+        bot_ips: dict,
         popular: dict,
         report_views: dict,
     ) -> None:
@@ -274,13 +307,22 @@ class StatsCollector:
                             hits = hits + excluded.hits
                     """, (hour, cnt_cached))
 
-            # daily_ips
+            # daily_ips: 0 — человек, 1 — бот. MIN не даёт позднему боту
+            # вернуть IP, который уже был человеком.
+            for date, ip_set in bot_ips.items():
+                for ip in ip_set:
+                    conn.execute("""
+                        INSERT INTO daily_ips (date, ip, bot) VALUES (?, ?, 1)
+                        ON CONFLICT(date, ip) DO UPDATE SET
+                            bot = MIN(daily_ips.bot, excluded.bot)
+                    """, (date, ip))
             for date, ip_set in ips.items():
                 for ip in ip_set:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO daily_ips (date, ip) VALUES (?, ?)",
-                        (date, ip)
-                    )
+                    conn.execute("""
+                        INSERT INTO daily_ips (date, ip, bot) VALUES (?, ?, 0)
+                        ON CONFLICT(date, ip) DO UPDATE SET
+                            bot = MIN(daily_ips.bot, excluded.bot)
+                    """, (date, ip))
 
             # daily_popular
             for date, rids in popular.items():
@@ -292,7 +334,7 @@ class StatsCollector:
                             hits = hits + excluded.hits
                     """, (date, rid, cnt))
 
-            # daily_report_views (уникальные IP на страницах отчётов)
+            # daily_report_views (уникальные IP людей на страницах отчётов)
             for date, rids in report_views.items():
                 for rid, ip_set in rids.items():
                     for ip in ip_set:
@@ -318,6 +360,7 @@ class StatsCollector:
     def query(self) -> dict:
         """
         Возвращает агрегированную статистику за 24ч / 7д / 30д.
+        unique_ips — люди, bot_ips — боты; хиты категорий и топы только по людям.
         Читает из stats.db (данные могут отставать на STATS_FLUSH_INTERVAL)
         и дополняет текущими in-memory счётчиками, накопленными с последнего flush.
         """
@@ -366,14 +409,26 @@ class StatsCollector:
                 else:
                     db_hits[period][row["category"]] = row["h"] or 0
 
-        # --- Уникальные IP из DB ---
+        # --- Уникальные IP из DB: человек, если хотя бы в один день bot = 0 ---
         db_ips: dict[str, int] = {}
+        db_bot_ips: dict[str, int] = {}
         for period, d_cut in cutoff_date.items():
             row = conn.execute(
-                "SELECT COUNT(DISTINCT ip) FROM daily_ips WHERE date >= ?",
-                (d_cut,)
+                """
+                SELECT
+                    SUM(CASE WHEN kind = 0 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN kind = 1 THEN 1 ELSE 0 END)
+                FROM (
+                    SELECT MIN(bot) AS kind
+                    FROM daily_ips
+                    WHERE date >= ?
+                    GROUP BY ip
+                )
+                """,
+                (d_cut,),
             ).fetchone()
-            db_ips[period] = row[0] if row else 0
+            db_ips[period] = (row[0] or 0) if row else 0
+            db_bot_ips[period] = (row[1] or 0) if row else 0
 
         # --- Топ скачиваний за 7 дней из DB ---
         top_rows = conn.execute(
@@ -444,13 +499,21 @@ class StatsCollector:
                 if hour >= h_cut:
                     db_cached[period] = db_cached.get(period, 0) + cnt
 
-        # IP из memory: берём максимум (DB уже содержит ранее записанные уникальные IP)
+        # IP из memory: берём максимум (DB уже содержит ранее записанные уникальные IP).
+        # Из ботов вычитаются только люди из памяти: до flush IP, уже ставший человеком
+        # в БД, может посчитаться и ботом — неточность не дольше STATS_FLUSH_INTERVAL.
         for period, d_cut in cutoff_date.items():
-            mem_ips: set = set()
+            mem_humans: set = set()
+            mem_bots: set = set()
             for d, ips in self._daily_ips.items():
                 if d >= d_cut:
-                    mem_ips.update(ips)
-            db_ips[period] = max(db_ips[period], len(mem_ips))
+                    mem_humans.update(ips)
+            for d, ips in self._daily_bot_ips.items():
+                if d >= d_cut:
+                    mem_bots.update(ips)
+            mem_bots -= mem_humans
+            db_ips[period] = max(db_ips[period], len(mem_humans))
+            db_bot_ips[period] = max(db_bot_ips[period], len(mem_bots))
 
         def _cats(period: str) -> dict:
             h = db_hits.get(period, {})
@@ -465,6 +528,7 @@ class StatsCollector:
             "h24": {
                 **_cats("h24"),
                 "unique_ips":     db_ips.get("h24", 0),
+                "bot_ips":        db_bot_ips.get("h24", 0),
                 "cached_reports": db_cached.get("h24", 0),
                 "errors_4xx":     db_err4.get("h24", 0),
                 "errors_5xx":     db_err5.get("h24", 0),
@@ -472,11 +536,13 @@ class StatsCollector:
             "d7": {
                 **_cats("d7"),
                 "unique_ips":     db_ips.get("d7", 0),
+                "bot_ips":        db_bot_ips.get("d7", 0),
                 "cached_reports": db_cached.get("d7", 0),
             },
             "d30": {
                 **_cats("d30"),
                 "unique_ips":     db_ips.get("d30", 0),
+                "bot_ips":        db_bot_ips.get("d30", 0),
                 "cached_reports": db_cached.get("d30", 0),
             },
             "top_report_views": top_report_views,
@@ -510,6 +576,7 @@ class TrafficStatsMiddleware(BaseHTTPMiddleware):
                     ip=ip,
                     status=response.status_code,
                     dt=datetime.now(timezone.utc),
+                    is_bot=_is_bot(request.headers.get("user-agent") or ""),
                 )
         except Exception as e:
             app_logger.debug(f"[traffic_stats] Ошибка записи события: {e}")

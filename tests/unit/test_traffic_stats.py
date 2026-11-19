@@ -1,6 +1,6 @@
 # Unit tests for middlewares/traffic_stats.py
 # Описание: Проверяет функции категоризации запросов (_categorize, _report_id_from_path,
-#           _report_id_from_page) и StatsCollector (record, flush, query).
+#           _report_id_from_page), признак бота (_is_bot) и StatsCollector (record, flush, query).
 #           StatsCollector принимает db_path параметром — патчинг config не нужен.
 #           flush() — async, запускается через asyncio.run().
 
@@ -164,6 +164,29 @@ class TestStatsCollectorRecord:
         today = _now().strftime("%Y-%m-%d")
         assert len(c._daily_ips[today]) == 2
 
+    def test_bot_skips_hits_but_counts_4xx(self, tmp_path):
+        c = _collector(tmp_path / "stats.db")
+        today = _now().strftime("%Y-%m-%d")
+        hour = _now().strftime("%Y-%m-%dT%H")
+        c.record("/api/search", "9.9.9.9", 200, _now(), is_bot=True)
+        c.record("/?42-TST", "9.9.9.9", 200, _now(), is_bot=True)
+        c.record("/data/00001-TST.zip", "9.9.9.9", 404, _now(), is_bot=True)
+        assert not any(c._hourly_hits.values())
+        assert not any(c._popular.values())
+        assert not any(c._report_views.values())
+        assert "9.9.9.9" in c._daily_bot_ips[today]
+        assert "9.9.9.9" not in c._daily_ips[today]
+        assert c._hourly_errors[hour]["4xx"] == 1
+
+    def test_human_after_bot_takes_ip(self, tmp_path):
+        c = _collector(tmp_path / "stats.db")
+        today = _now().strftime("%Y-%m-%d")
+        c.record("/api/search", "1.2.3.4", 200, _now(), is_bot=True)
+        c.record("/api/search", "1.2.3.4", 200, _now(), is_bot=False)
+        assert "1.2.3.4" in c._daily_ips[today]
+        assert "1.2.3.4" not in c._daily_bot_ips[today]
+        assert c._hourly_hits[_now().strftime("%Y-%m-%dT%H")]["search"] == 1
+
 
 class TestStatsCollectorFlush:
     def test_flush_writes_to_db(self, tmp_path):
@@ -203,6 +226,72 @@ class TestStatsCollectorFlush:
         conn.close()
         assert total == 1
 
+    def test_later_bot_flush_keeps_human(self, tmp_path):
+        c = _collector(tmp_path / "stats.db")
+        c.record("/api/search", "1.2.3.4", 200, _now(), is_bot=True)
+        asyncio.run(c.flush())
+        c.record("/api/search", "1.2.3.4", 200, _now(), is_bot=False)
+        asyncio.run(c.flush())
+        c.record("/api/search", "1.2.3.4", 200, _now(), is_bot=True)
+        asyncio.run(c.flush())
+
+        result = c.query()
+        assert result["h24"]["unique_ips"] == 1
+        assert result["h24"]["bot_ips"] == 0
+
+    def test_alter_adds_bot_column(self, tmp_path):
+        db_path = tmp_path / "stats.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE daily_ips (date TEXT NOT NULL, ip TEXT NOT NULL, PRIMARY KEY (date, ip))"
+        )
+        today = _now().strftime("%Y-%m-%d")
+        conn.execute("INSERT INTO daily_ips (date, ip) VALUES (?, '1.1.1.1')", (today,))
+        conn.commit()
+        conn.close()
+
+        c = _collector(db_path)
+        c.record("/api/search", "2.2.2.2", 200, _now(), is_bot=True)
+        asyncio.run(c.flush())
+
+        conn = sqlite3.connect(str(db_path))
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(daily_ips)")]
+        old = conn.execute("SELECT bot FROM daily_ips WHERE ip = '1.1.1.1'").fetchone()[0]
+        new = conn.execute("SELECT bot FROM daily_ips WHERE ip = '2.2.2.2'").fetchone()[0]
+        conn.close()
+        assert "bot" in cols
+        assert old == 0
+        assert new == 1
+
+
+class TestIsBot:
+    def _bot(self, ua: str) -> bool:
+        from middlewares.traffic_stats import _is_bot
+        return _is_bot(ua)
+
+    def test_googlebot(self):
+        assert self._bot("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
+
+    def test_empty_ua(self):
+        assert self._bot("")
+
+    @pytest.mark.parametrize("ua", [
+        "Mozilla/5.0 (compatible; YandexImages/3.0; +http://yandex.com/bots)",
+        "Mozilla/5.0 (compatible; Linux x86_64; Mail.RU_Bot/2.0; +https://help.mail.ru/webmaster/indexing/robots)",
+        "python-httpx/0.27.0",
+        "Python-urllib/3.12",
+    ])
+    def test_other_crawlers(self, ua):
+        assert self._bot(ua)
+
+    @pytest.mark.parametrize("ua", [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 YaBrowser/24.1.0.0 Safari/537.36",
+    ])
+    def test_browsers_are_human(self, ua):
+        assert not self._bot(ua)
+
 
 class TestStatsCollectorQuery:
     def test_query_returns_required_keys(self, tmp_path):
@@ -226,3 +315,15 @@ class TestStatsCollectorQuery:
         result = c.query()
         assert result["h24"]["download"] >= 1
         assert any(r["report_id"] == "00001-TST" for r in result["top_reports"])
+
+    def test_query_splits_humans_and_bots(self, tmp_path):
+        c = _collector(tmp_path / "stats.db")
+        c.record("/api/search", "1.1.1.1", 200, _now())
+        c.record("/?42-TST", "8.8.8.8", 200, _now(), is_bot=True)
+        result = c.query()
+        assert result["h24"]["unique_ips"] == 1
+        assert result["h24"]["bot_ips"] == 1
+        assert result["h24"]["search"] == 1
+        assert result["h24"]["report"] == 0
+        assert result["d7"]["bot_ips"] == 1
+        assert result["d30"]["unique_ips"] == 1

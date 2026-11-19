@@ -219,12 +219,13 @@ def _collect_stats_items(stats_collector=None) -> list[str]:
         try:
             q = stats_collector.query()
             h24 = q.get("h24", {})
-            ips = h24.get("unique_ips", 0)
+            humans = h24.get("unique_ips", 0)
+            bots = h24.get("bot_ips", 0)
             searches = h24.get("search", 0)
             downloads = h24.get("download", 0)
             err4 = h24.get("errors_4xx", 0)
             err5 = h24.get("errors_5xx", 0)
-            items.append(f"- Уникальных посетителей за сутки: {ips}.")
+            items.append(f"- Посетители за сутки: {humans} человек, {bots} бот(ов).")
             items.append(f"- Поисковых запросов: {searches}, скачиваний: {downloads}.")
             if err4 or err5:
                 items.append(f"- Ошибок сервера: {err4} (4xx) + {err5} (5xx).")

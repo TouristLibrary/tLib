@@ -141,6 +141,43 @@ STATS_FLUSH_INTERVAL: int = 300
 # Срок хранения данных статистики (дней); более старые записи удаляются автоматически
 STATS_RETENTION_DAYS: int = 90
 
+# Подстроки User-Agent (нижний регистр), по которым запрос считается ботом.
+# Пустой User-Agent проверяет код отдельно. «+http» — ссылка на справку краулера,
+# браузеры её не пишут. «yandex.com/bots» есть у всех роботов Яндекса, но не у
+# Яндекс Браузера и приложения. Общий маркер «bot» не используем: он встречается
+# в UA телефонов Cubot и засчитал бы людей ботами.
+BOT_UA_MARKERS: tuple[str, ...] = (
+    "+http",
+    "googlebot",
+    "adsbot-google",
+    "storebot-google",
+    "google-inspectiontool",
+    "yandex.com/bots",
+    "mail.ru_bot",
+    "petalbot",
+    "bingbot",
+    "duckduckbot",
+    "baiduspider",
+    "applebot",
+    "ahrefsbot",
+    "semrushbot",
+    "mj12bot",
+    "dotbot",
+    "gptbot",
+    "chatgpt-user",
+    "claudebot",
+    "amazonbot",
+    "bytespider",
+    "ccbot",
+    "facebookexternalhit",
+    "telegrambot",
+    "twitterbot",
+    "curl",
+    "wget",
+    "python",
+    "go-http-client",
+)
+
 
 # ==================== АВТОРИЗАЦИЯ ====================
 

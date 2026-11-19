@@ -301,7 +301,8 @@ function renderTrafficPeriod(p) {
   if (!p) return '<span class="badge badge-neutral">Нет данных</span>';
   return `
     <div class="traffic-period">
-      ${kvItem('Уник. IP',    num(p.unique_ips))}
+      ${kvItem('Люди',        num(p.unique_ips))}
+      ${kvItem('Боты',        num(p.bot_ips))}
       ${kvItem('Поиск',       num(p.search))}
       ${kvItem('Отчёты',      num(p.report))}
       ${kvItem('В кэш',       num(p.cached_reports))}
