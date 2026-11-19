@@ -1,6 +1,7 @@
 # Unit tests for services/alerts/
 # Описание: Тесты парсера critical.log, форматирования писем,
-#           логики троттлинга и сборки дайджеста. SMTP не вызывается (замокан).
+#           логики троттлинга, сборки дайджеста и решения, когда его слать.
+#           SMTP не вызывается (замокан).
 
 from __future__ import annotations
 
@@ -335,6 +336,46 @@ class TestSendAdminAlertSafety(unittest.TestCase):
             send_admin_alert("BATCH_ERROR")
         # BATCH_ERROR — ATTENTION, писем быть не должно
         self.assertEqual(sent_calls, [])
+
+
+# ---------------------------------------------------------------------------
+# Когда слать дайджест
+# ---------------------------------------------------------------------------
+
+class TestDigestDue(unittest.TestCase):
+    """Решение «пора ли»: слот, маркер дня и пауза 15 минут. SMTP не вызывается."""
+
+    SLOT_H = 20
+    SLOT_M = 0
+
+    def _due(self, now, last_attempt=None, sent_date=None):
+        from services.alerts.digest import _digest_due
+        return _digest_due(now, self.SLOT_H, self.SLOT_M, last_attempt, sent_date)
+
+    def test_before_slot(self):
+        self.assertFalse(self._due(datetime(2026, 11, 19, 19, 59)))
+
+    def test_at_slot_without_marker(self):
+        self.assertTrue(self._due(datetime(2026, 11, 19, 20, 0)))
+
+    def test_five_minutes_after_failure(self):
+        failed = datetime(2026, 11, 19, 20, 0)
+        self.assertFalse(self._due(failed + timedelta(minutes=5), last_attempt=failed))
+
+    def test_fifteen_minutes_after_failure(self):
+        failed = datetime(2026, 11, 19, 20, 0)
+        self.assertTrue(self._due(failed + timedelta(minutes=15), last_attempt=failed))
+
+    def test_marker_today_blocks(self):
+        now = datetime(2026, 11, 19, 21, 0)
+        self.assertFalse(self._due(now, sent_date="2026-11-19"))
+
+    def test_after_midnight_waits_for_new_slot(self):
+        now = datetime(2026, 11, 20, 0, 10)
+        self.assertFalse(self._due(now, sent_date="2026-11-19"))
+
+    def test_missed_minute_still_due(self):
+        self.assertTrue(self._due(datetime(2026, 11, 19, 21, 0)))
 
 
 if __name__ == "__main__":

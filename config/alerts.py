@@ -30,6 +30,10 @@ DIGEST_TIMEZONE_OFFSET_HOURS: Final[int] = 3
 # Интервал проверки "пора ли отправлять" в фоновой задаче дайджеста (секунды).
 DIGEST_CHECK_INTERVAL_SECONDS: Final[int] = 60
 
+# Пауза между попытками, если SMTP не принял дайджест (секунды).
+# Окно попыток — от настроенного времени до полуночи МСК; чаще стучаться незачем.
+DIGEST_RETRY_INTERVAL_SECONDS: Final[int] = 900
+
 # Интервал проверки диска в фоновой задаче дайджеста (секунды).
 DISK_CHECK_INTERVAL_SECONDS: Final[int] = 3600
 

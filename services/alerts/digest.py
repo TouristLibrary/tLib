@@ -4,6 +4,7 @@
 #           проверяет состояние очередей и диска.
 #           Три секции: ТРЕБУЕТ ВНИМАНИЯ / СОБЫТИЯ / СТАТИСТИКА.
 #           Отправляется раз в сутки в настраиваемое время (МСК).
+#           При сбое SMTP повтор до полуночи с паузой, маркер дня — только после успеха.
 #           Ежечасно проверяет диск и шлёт URGENT-алерт при критической занятости.
 
 import asyncio
@@ -23,8 +24,8 @@ from config import (
     ALERT_DESCRIPTIONS, ALERT_LEVELS, MAIL_SUBJECT_PREFIX,
     DISK_WARN_PERCENT, DISK_CRIT_PERCENT,
     DIGEST_DEFAULT_SEND_TIME, DIGEST_TIMEZONE_OFFSET_HOURS,
-    DIGEST_CHECK_INTERVAL_SECONDS, DISK_CHECK_INTERVAL_SECONDS,
-    DIGEST_MARKER_FILE,
+    DIGEST_CHECK_INTERVAL_SECONDS, DIGEST_RETRY_INTERVAL_SECONDS,
+    DISK_CHECK_INTERVAL_SECONDS, DIGEST_MARKER_FILE,
 )
 from logging_config import app_logger, parse_logfmt_fields
 from services.admin.status_service import collect_pcloud_sync
@@ -321,16 +322,20 @@ def build_digest(stats_collector=None) -> tuple[str, str]:
     return subject, body
 
 
-def _send_digest_sync(stats_collector=None) -> None:
-    """Собирает и отправляет дайджест синхронно. Вызывается из asyncio.to_thread."""
+def _send_digest_sync(stats_collector=None) -> bool:
+    """Собирает и отправляет дайджест синхронно. Вызывается из asyncio.to_thread.
+
+    True — SMTP принял письмо. False — не настроено, некому слать или ошибка SMTP.
+    Исключение наружу не летит: повтор решает фоновая задача по этому флагу.
+    """
     if not SMTP_SENDER or not SMTP_PASSWORD:
         _log.error("[digest] SMTP credentials не настроены — дайджест не отправлен")
-        return
+        return False
 
     recipients = collect_admin_emails()
     if not recipients:
         _log.warning("[digest] Нет адресов администраторов — дайджест не отправлен")
-        return
+        return False
 
     subject, body = build_digest(stats_collector)
 
@@ -345,8 +350,10 @@ def _send_digest_sync(stats_collector=None) -> None:
             srv.login(SMTP_SENDER, SMTP_PASSWORD)
             srv.sendmail(SMTP_SENDER, recipients, msg.as_string())
         app_logger.info(f"[digest] Дайджест отправлен {len(recipients)} адм.: {subject}")
+        return True
     except Exception as e:
         _log.error(f"[digest] SMTP ошибка при отправке дайджеста: {e}")
+        return False
 
 
 # ============================================================================
@@ -365,29 +372,52 @@ def _get_digest_send_time() -> tuple[int, int]:
         return int(default[0]), int(default[1])
 
 
-def _should_send_today(hour: int, minute: int) -> bool:
-    """Возвращает True если сейчас время отправки и дайджест ещё не отправлялся сегодня."""
-    now_msk = datetime.now(timezone.utc) + timedelta(hours=DIGEST_TIMEZONE_OFFSET_HOURS)
-    if now_msk.hour != hour or now_msk.minute != minute:
-        return False
+def _now_msk() -> datetime:
+    """Текущее время со сдвигом на МСК. Часы показывают Москву, tzinfo остаётся UTC."""
+    return datetime.now(timezone.utc) + timedelta(hours=DIGEST_TIMEZONE_OFFSET_HOURS)
 
+
+def _read_marker_date() -> str | None:
+    """Дата последней успешной отправки (YYYY-MM-DD). Нет файла или не прочитался — ещё не слали."""
     marker = Path(DIGEST_MARKER_FILE)
-    today = now_msk.strftime("%Y-%m-%d")
-    if marker.exists():
-        try:
-            last = marker.read_text(encoding="utf-8").strip()
-            if last == today:
-                return False
-        except Exception:
-            pass
+    try:
+        if not marker.exists():
+            return None
+        text = marker.read_text(encoding="utf-8").strip()
+        return text or None
+    except Exception:
+        return None
+
+
+def _digest_due(
+    now_msk: datetime,
+    hour: int,
+    minute: int,
+    last_attempt: datetime | None,
+    sent_date: str | None,
+) -> bool:
+    """Пора ли слать: слот наступил, сегодня ещё не ушёл, пауза после сбоя выдержана.
+
+    Окно — от настроенного времени до полуночи МСК. После полуночи ждём сегодняшний слот,
+    вчерашний пропуск не догоняем. last_attempt is None — попытки в этом процессе ещё не было.
+    """
+    if sent_date == now_msk.strftime("%Y-%m-%d"):
+        return False
+    scheduled = now_msk.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if now_msk < scheduled:
+        return False
+    if (
+        last_attempt is not None
+        and (now_msk - last_attempt) < timedelta(seconds=DIGEST_RETRY_INTERVAL_SECONDS)
+    ):
+        return False
     return True
 
 
 def _mark_sent() -> None:
-    """Записывает сегодняшнюю дату в маркер-файл."""
+    """Записывает сегодняшнюю дату в маркер-файл. Вызывать только после успешного SMTP."""
     try:
-        now_msk = datetime.now(timezone.utc) + timedelta(hours=DIGEST_TIMEZONE_OFFSET_HOURS)
-        today = now_msk.strftime("%Y-%m-%d")
+        today = _now_msk().strftime("%Y-%m-%d")
         marker = Path(DIGEST_MARKER_FILE)
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(today, encoding="utf-8")
@@ -418,6 +448,8 @@ async def daily_digest_task(app) -> None:
     """
     app_logger.info("[digest] Задача дайджеста запущена")
     disk_check_counter = 0
+    # Сбрасывается при рестарте: если окно ещё открыто и маркера нет, первая проверка шлёт сразу.
+    last_attempt: datetime | None = None
 
     while True:
         try:
@@ -429,12 +461,16 @@ async def daily_digest_task(app) -> None:
                 disk_check_counter = 0
                 await asyncio.to_thread(_check_disk_and_alert)
 
-            # Проверка времени отправки дайджеста
             hour, minute = _get_digest_send_time()
-            if _should_send_today(hour, minute):
+            now_msk = _now_msk()
+            if not _digest_due(now_msk, hour, minute, last_attempt, _read_marker_date()):
+                continue
+            # Пауза считается от попытки, в том числе неудачной: иначе следующая
+            # минутная проверка сразу повторит SMTP.
+            last_attempt = now_msk
+            stats_collector = getattr(getattr(app, "state", None), "stats_collector", None)
+            if await asyncio.to_thread(_send_digest_sync, stats_collector):
                 _mark_sent()
-                stats_collector = getattr(getattr(app, "state", None), "stats_collector", None)
-                await asyncio.to_thread(_send_digest_sync, stats_collector)
 
         except asyncio.CancelledError:
             raise
