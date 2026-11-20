@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -154,19 +154,18 @@ class TestStatsCollectorRecord:
         c.record("/js/app.js", "1.2.3.4", 200, _now())
         # Ничего не записалось
         assert not any(c._hourly_hits.values())
-        assert not any(c._daily_ips.values())
+        assert not any(c._hourly_ips.values())
 
-    def test_unique_ips_counted_per_day(self, tmp_path):
+    def test_unique_ips_counted_per_hour(self, tmp_path):
         c = _collector(tmp_path / "stats.db")
         c.record("/api/search", "1.1.1.1", 200, _now())
         c.record("/api/search", "2.2.2.2", 200, _now())
         c.record("/api/search", "1.1.1.1", 200, _now())  # дубль
-        today = _now().strftime("%Y-%m-%d")
-        assert len(c._daily_ips[today]) == 2
+        hour = _now().strftime("%Y-%m-%dT%H")
+        assert len(c._hourly_ips[hour]) == 2
 
     def test_bot_skips_hits_but_counts_4xx(self, tmp_path):
         c = _collector(tmp_path / "stats.db")
-        today = _now().strftime("%Y-%m-%d")
         hour = _now().strftime("%Y-%m-%dT%H")
         c.record("/api/search", "9.9.9.9", 200, _now(), is_bot=True)
         c.record("/?42-TST", "9.9.9.9", 200, _now(), is_bot=True)
@@ -174,18 +173,18 @@ class TestStatsCollectorRecord:
         assert not any(c._hourly_hits.values())
         assert not any(c._popular.values())
         assert not any(c._report_views.values())
-        assert "9.9.9.9" in c._daily_bot_ips[today]
-        assert "9.9.9.9" not in c._daily_ips[today]
+        assert "9.9.9.9" in c._hourly_bot_ips[hour]
+        assert "9.9.9.9" not in c._hourly_ips[hour]
         assert c._hourly_errors[hour]["4xx"] == 1
 
     def test_human_after_bot_takes_ip(self, tmp_path):
         c = _collector(tmp_path / "stats.db")
-        today = _now().strftime("%Y-%m-%d")
+        hour = _now().strftime("%Y-%m-%dT%H")
         c.record("/api/search", "1.2.3.4", 200, _now(), is_bot=True)
         c.record("/api/search", "1.2.3.4", 200, _now(), is_bot=False)
-        assert "1.2.3.4" in c._daily_ips[today]
-        assert "1.2.3.4" not in c._daily_bot_ips[today]
-        assert c._hourly_hits[_now().strftime("%Y-%m-%dT%H")]["search"] == 1
+        assert "1.2.3.4" in c._hourly_ips[hour]
+        assert "1.2.3.4" not in c._hourly_bot_ips[hour]
+        assert c._hourly_hits[hour]["search"] == 1
 
 
 class TestStatsCollectorFlush:
@@ -199,12 +198,12 @@ class TestStatsCollectorFlush:
         conn = sqlite3.connect(str(tmp_path / "stats.db"))
         hourly = conn.execute("SELECT SUM(hits) FROM hourly_stats").fetchone()[0]
         popular = conn.execute("SELECT COUNT(*) FROM daily_popular").fetchone()[0]
-        daily_ips = conn.execute("SELECT COUNT(*) FROM daily_ips").fetchone()[0]
+        hourly_ips = conn.execute("SELECT COUNT(*) FROM hourly_ips").fetchone()[0]
         conn.close()
 
         assert hourly and hourly >= 2
         assert popular >= 1
-        assert daily_ips >= 1
+        assert hourly_ips >= 1
 
     def test_flush_clears_in_memory(self, tmp_path):
         c = _collector(tmp_path / "stats.db")
@@ -239,7 +238,7 @@ class TestStatsCollectorFlush:
         assert result["h24"]["unique_ips"] == 1
         assert result["h24"]["bot_ips"] == 0
 
-    def test_alter_adds_bot_column(self, tmp_path):
+    def test_legacy_daily_ips_move_to_hour(self, tmp_path):
         db_path = tmp_path / "stats.db"
         conn = sqlite3.connect(str(db_path))
         conn.execute(
@@ -255,19 +254,23 @@ class TestStatsCollectorFlush:
         asyncio.run(c.flush())
 
         conn = sqlite3.connect(str(db_path))
-        cols = [row[1] for row in conn.execute("PRAGMA table_info(daily_ips)")]
-        old = conn.execute("SELECT bot FROM daily_ips WHERE ip = '1.1.1.1'").fetchone()[0]
-        new = conn.execute("SELECT bot FROM daily_ips WHERE ip = '2.2.2.2'").fetchone()[0]
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        old = conn.execute(
+            "SELECT hour, bot FROM hourly_ips WHERE ip = '1.1.1.1'"
+        ).fetchone()
+        new = conn.execute(
+            "SELECT bot FROM hourly_ips WHERE ip = '2.2.2.2'"
+        ).fetchone()[0]
         conn.close()
-        assert "bot" in cols
-        assert old == 0
+        assert "daily_ips" not in tables
+        assert old == (today + "T00", 0)
         assert new == 1
 
 
 class TestIsBot:
-    def _bot(self, ua: str) -> bool:
+    def _bot(self, ua: str, accept_language: str = "ru") -> bool:
         from middlewares.traffic_stats import _is_bot
-        return _is_bot(ua)
+        return _is_bot(ua, accept_language)
 
     def test_googlebot(self):
         assert self._bot("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)")
@@ -291,6 +294,12 @@ class TestIsBot:
     ])
     def test_browsers_are_human(self, ua):
         assert not self._bot(ua)
+
+    def test_browser_without_accept_language_is_bot(self):
+        ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+        assert self._bot(ua, "")
+        assert self._bot(ua, "   ")
+        assert not self._bot(ua, "ru-RU,ru;q=0.9")
 
 
 class TestStatsCollectorQuery:
@@ -327,3 +336,28 @@ class TestStatsCollectorQuery:
         assert result["h24"]["report"] == 0
         assert result["d7"]["bot_ips"] == 1
         assert result["d30"]["unique_ips"] == 1
+
+    def test_unique_ips_use_same_hour_window_as_hits(self, tmp_path):
+        c = _collector(tmp_path / "stats.db")
+        now = _now()
+        c.record("/api/search", "1.1.1.1", 200, now - timedelta(hours=2))
+        c.record("/api/search", "2.2.2.2", 200, now - timedelta(hours=25))
+        asyncio.run(c.flush())
+        result = c.query()
+        assert result["h24"]["unique_ips"] == 1
+        assert result["h24"]["search"] == 1
+        assert result["d7"]["unique_ips"] == 2
+        assert result["d7"]["search"] == 2
+
+    def test_human_outside_window_does_not_clear_bot(self, tmp_path):
+        c = _collector(tmp_path / "stats.db")
+        now = _now()
+        c.record("/api/search", "1.2.3.4", 200, now - timedelta(hours=30))
+        c.record("/api/search", "1.2.3.4", 200, now - timedelta(hours=1), is_bot=True)
+        asyncio.run(c.flush())
+        result = c.query()
+        assert result["h24"]["unique_ips"] == 0
+        assert result["h24"]["bot_ips"] == 1
+        assert result["h24"]["search"] == 0
+        assert result["d7"]["unique_ips"] == 1
+        assert result["d7"]["bot_ips"] == 0
