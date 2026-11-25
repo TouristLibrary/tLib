@@ -297,6 +297,20 @@ function renderSecurity(s) {
 
 // ---- section 5: Traffic stats ----------------------------------------------
 
+function formatSince(hourKey) {
+  if (!hourKey) return '';
+  const date = new Date(hourKey + ':00:00Z');
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Europe/Moscow',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
 function renderTrafficPeriod(p) {
   if (!p) return '<span class="badge badge-neutral">Нет данных</span>';
   return `
@@ -305,7 +319,6 @@ function renderTrafficPeriod(p) {
       ${kvItem('Боты',        num(p.bot_ips))}
       ${kvItem('Поиск',       num(p.search))}
       ${kvItem('Отчёты',      num(p.report))}
-      ${kvItem('В кэш',       num(p.cached_reports))}
       ${kvItem('Загрузок',    num(p.download))}
       ${kvItem('API',         num(p.api))}
     </div>`;
@@ -317,7 +330,14 @@ function renderTraffic(t) {
   }
 
   const h24 = t.h24 || {};
-  const errBlock = `
+  const d7 = t.d7 || {};
+  const d30 = t.d30 || {};
+  const sinceText = formatSince(t.since);
+  const sinceLine = sinceText
+    ? `<p class="muted">Данные с ${escapeHtml(sinceText)}</p>`
+    : '';
+  const serverBlock = `
+    <p class="section-title" style="margin-top:16px">Сервер (все запросы, включая ботов)</p>
     <div class="traffic-errors">
       ${kvItem('Ошибок 4xx', h24.errors_4xx != null
         ? `<span class="badge ${h24.errors_4xx > 0 ? 'badge-warn' : 'badge-ok'}">${num(h24.errors_4xx)}</span>`
@@ -325,11 +345,17 @@ function renderTraffic(t) {
       ${kvItem('Ошибок 5xx', h24.errors_5xx != null
         ? `<span class="badge ${h24.errors_5xx > 0 ? 'badge-error' : 'badge-ok'}">${num(h24.errors_5xx)}</span>`
         : '—')}
+    </div>
+    <div class="traffic-period">
+      ${kvItem('В кэш, 24 часа', num(h24.cached_reports))}
+      ${kvItem('В кэш, 7 дней', num(d7.cached_reports))}
+      ${kvItem('В кэш, 30 дней', num(d30.cached_reports))}
     </div>`;
 
   let topViewRows = '';
-  if (t.top_report_views && t.top_report_views.length) {
-    topViewRows = t.top_report_views.map(r =>
+  const topViews = d7.top_report_views || [];
+  if (topViews.length) {
+    topViewRows = topViews.map(r =>
       `<tr>
         <td class="td-id">${escapeHtml(r.report_id)}</td>
         <td class="td-pct">${num(r.unique_ips)}</td>
@@ -340,8 +366,9 @@ function renderTraffic(t) {
   }
 
   let topRows = '';
-  if (t.top_reports && t.top_reports.length) {
-    topRows = t.top_reports.map(r =>
+  const topDownloads = d7.top_reports || [];
+  if (topDownloads.length) {
+    topRows = topDownloads.map(r =>
       `<tr>
         <td class="td-id">${escapeHtml(r.report_id)}</td>
         <td class="td-pct">${num(r.hits)}</td>
@@ -352,11 +379,11 @@ function renderTraffic(t) {
   }
 
   return `
+    ${sinceLine}
     <div class="traffic-grid">
       <div class="traffic-col">
         <p class="section-title">За 24 часа</p>
         ${renderTrafficPeriod(t.h24)}
-        ${errBlock}
       </div>
       <div class="traffic-col">
         <p class="section-title">За 7 дней</p>
@@ -367,6 +394,7 @@ function renderTraffic(t) {
         ${renderTrafficPeriod(t.d30)}
       </div>
     </div>
+    ${serverBlock}
     <p class="section-title" style="margin-top:16px">Топ отчётов за 7 дней</p>
     <table>
       <thead><tr><th>Шифр</th><th style="text-align:right">Уник. IP</th></tr></thead>

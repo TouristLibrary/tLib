@@ -272,6 +272,38 @@ class TestBuildDigest(unittest.TestCase):
              patch("pathlib.Path.exists", return_value=False):
             return build_digest(stats_collector=None)
 
+    def test_stats_lines_match_admin_windows(self):
+        from services.alerts.digest import _collect_stats_items
+
+        class _Stats:
+            def query(self):
+                return {
+                    "h24": {
+                        "unique_ips": 3,
+                        "bot_ips": 9,
+                        "search": 2,
+                        "download": 1,
+                        "errors_4xx": 4,
+                        "errors_5xx": 1,
+                    },
+                    "d7": {
+                        "top_report_views": [
+                            {"report_id": "1-TST", "unique_ips": 2},
+                        ],
+                    },
+                }
+
+        disk_ok = {"used_pct": 50, "free_gb": 50.0, "used_gb": 50.0, "total_gb": 100.0,
+                   "free_bytes": 50 * 1024**3, "used_bytes": 50 * 1024**3, "total_bytes": 100 * 1024**3}
+        with patch("services.alerts.digest.collect_pcloud_sync", return_value=None), \
+             patch("services.alerts.digest.get_disk_usage", return_value=disk_ok):
+            lines = _collect_stats_items(_Stats())
+        text = "\n".join(lines)
+        self.assertIn("- Посетители за сутки: 3 человек, 9 бот(ов).", text)
+        self.assertIn("- Поисковых запросов: 2, скачиваний: 1.", text)
+        self.assertIn("- Ошибки за сутки (все запросы): 4xx — 4, 5xx — 1.", text)
+        self.assertIn("- Топ отчётов по просмотрам за 7 дней: 1-TST (2 просм.).", text)
+
     def test_pcloud_not_configured_is_stats_only(self):
         subject, body = self._digest_quiet(None)
         self.assertIn("всё в порядке", subject)

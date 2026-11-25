@@ -229,15 +229,18 @@ def _collect_stats_items(stats_collector=None) -> list[str]:
             items.append(f"- Посетители за сутки: {humans} человек, {bots} бот(ов).")
             items.append(f"- Поисковых запросов: {searches}, скачиваний: {downloads}.")
             if err4 or err5:
-                items.append(f"- Ошибок сервера: {err4} (4xx) + {err5} (5xx).")
+                items.append(
+                    f"- Ошибки за сутки (все запросы): 4xx — {err4}, 5xx — {err5}."
+                )
 
-            top_views = q.get("top_report_views", [])[:3]
+            # Топ на странице /admin — за 7 дней; письмо берёт ту же цифру.
+            top_views = q.get("d7", {}).get("top_report_views", [])[:3]
             if top_views:
                 top_str = ", ".join(
                     f"{r['report_id']} ({r['unique_ips']} просм.)"
                     for r in top_views
                 )
-                items.append(f"- Топ отчётов по просмотрам: {top_str}.")
+                items.append(f"- Топ отчётов по просмотрам за 7 дней: {top_str}.")
         except Exception as e:
             _log.error(f"[digest] Ошибка сбора статистики: {e}")
 

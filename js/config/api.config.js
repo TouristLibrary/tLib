@@ -7,6 +7,9 @@ import { deepFreeze } from '../utils/freeze.js';
  */
 export const API = deepFreeze({
     SEARCH: '/api/search',
+    // Автопоиск (открытие /?шифр и история) не должен попадать в счётчик «Поиск».
+    SEARCH_AUTO_QUERY: '?auto=1',
+    GESTURE: '/api/gesture',
     REPORTS_COUNT: '/api/reports-count',
     REFERENCE_VERSION: '/api/reference-version',
     DOPSHIFR_LIST: '/api/dopshifr-list',

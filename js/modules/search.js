@@ -51,10 +51,10 @@ class SearchEngine {
     /**
      * Выполняет поиск по данным формы через серверный API с автоматической пагинацией
      * @param {FormData} formData - Данные формы поиска
-     * @param {boolean} autoLoadAll - Автоматически загружать все страницы (по умолчанию true)
+     * @param {{auto?: boolean}} [options] - auto: открытие ссылки или истории, не ручной поиск
      * @returns {Promise<Array>} Результаты поиска
      */
-    async search(formData) {
+    async search(formData, { auto = false } = {}) {
         try {
             this.currentSearchId++;
             const searchId = this.currentSearchId;
@@ -68,7 +68,10 @@ class SearchEngine {
                 offset: 0
             });
             
-            const result = await fetchApiJson(CONSTANTS.API.SEARCH, {
+            const searchUrl = auto
+                ? CONSTANTS.API.SEARCH + CONSTANTS.API.SEARCH_AUTO_QUERY
+                : CONSTANTS.API.SEARCH;
+            const result = await fetchApiJson(searchUrl, {
                 method: 'POST',
                 body: firstPageData
             });

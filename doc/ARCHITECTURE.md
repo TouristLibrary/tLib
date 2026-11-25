@@ -77,7 +77,7 @@ TlibWebApp/
 │   ├── http_methods.py     # Фильтрация методов
 │   ├── request_id.py       # Уникальный ID запроса
 │   ├── data_download.py    # Content-Disposition для файлов /data/
-│   └── traffic_stats.py    # Статистика посещений → stats.db (data.secret/)
+│   └── traffic_stats.py    # Статистика посещений → stats.db; человек = маячок жеста
 │
 ├── routers/                # API Endpoints (тонкий HTTP-слой: auth + вызов сервиса)
 │   ├── search_router.py    # POST /api/search
@@ -91,6 +91,7 @@ TlibWebApp/
 │   ├── auth_router.py      # Magic Link аутентификация (/api/auth/*)
 │   ├── upload_router.py    # GET/POST /api/upload/* (тонкий слой, логика → upload_service)
 │   ├── health_router.py    # GET /health
+│   ├── stats_router.py     # POST /api/gesture (маячок жеста, учёт в traffic_stats)
 │   ├── sitemap_router.py   # GET /sitemap.xml (динамическая генерация с кешем по reference_version)
 │   └── static_router.py    # GET / (SEO-рендер, 301 без меток Clean-param), /robots.txt, /index.html (301→/), /about.html, legacy-редиректы (/doc.aspx?id=, пути файлов старого сайта /png|pdf|tif|zip/…, /files/<id>/…), /api/redirect-table
 │

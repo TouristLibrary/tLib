@@ -70,7 +70,7 @@ from config import (
 )
 
 # Импорт роутеров
-from routers import archive_router, pdf_router, search_router, lists_router, static_router, health_router, config_router, cache_router, png_viewer_router, admin_router, auth_router, upload_router, sitemap_router
+from routers import archive_router, pdf_router, search_router, lists_router, static_router, health_router, config_router, cache_router, png_viewer_router, admin_router, auth_router, upload_router, sitemap_router, stats_router
 
 # Импорт auth DB
 from services.auth.auth_db import init_auth_db, cleanup_expired
@@ -284,6 +284,7 @@ app.include_router(pdf_router.router)
 app.include_router(search_router.router)
 app.include_router(lists_router.router)
 app.include_router(sitemap_router.router)
+app.include_router(stats_router.router)
 app.include_router(static_router.router)
 
 # Регистрируем middleware

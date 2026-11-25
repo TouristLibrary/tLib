@@ -1,7 +1,8 @@
 # Routers package для TlibWebApp
 # Описание: Пакет содержит все API роутеры приложения.
 #           Включает роутеры для архивов, поиска, справочников, конфигурации, статических страниц,
-#           health check endpoint, cache management, PDF viewer и PNG viewer.
+#           health check endpoint, cache management, PDF viewer, PNG viewer и маячок
+#           жеста для статистики посещений (stats_router).
 #           Таблица редиректов (/api/redirect-table) обрабатывается в static_router.
 #           Скачивание файлов обрабатывается через DataDownloadMiddleware.
 
@@ -17,6 +18,7 @@ from . import png_viewer_router
 from . import admin_router
 from . import auth_router
 from . import upload_router
+from . import stats_router
 
 __all__ = [
     'archive_router',
@@ -31,4 +33,5 @@ __all__ = [
     'admin_router',
     'auth_router',
     'upload_router',
+    'stats_router',
 ]

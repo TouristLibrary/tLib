@@ -350,7 +350,7 @@ class TlibWebApp {
                 const formData = buildFormDataFromParams(params);
                 appState.setSearching(true);
                 try {
-                    const results = await searchEngine.search(formData);
+                    const results = await searchEngine.search(formData, { auto: true });
                     console.log(`redirect:auto-search завершён, найдено ${results.length} результатов`);
                 } finally {
                     appState.setSearching(false);

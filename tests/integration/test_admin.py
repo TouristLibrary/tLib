@@ -21,6 +21,7 @@ import services.auth.auth_db as auth_db_module
 import services.auth.session_helpers as session_helpers_module
 from routers.admin_router import router as admin_router
 from routers.auth_router import router as auth_router
+from routers.stats_router import router as stats_router
 from services.auth.auth_db import create_session, find_or_create_user, set_user_role
 from services.database.tlib_table_spec import build_create_table_sql
 from config import AUTH_COOKIE_NAME, DATABASE_TABLE_NAME
@@ -79,6 +80,7 @@ def admin_app_instance(auth_db_path, admin_tlib_db, admin_dirs) -> FastAPI:
     application = FastAPI()
     application.include_router(auth_router)
     application.include_router(admin_router)
+    application.include_router(stats_router)
     return application
 
 
@@ -108,6 +110,12 @@ PROTECTED_ENDPOINTS = [
     ("GET", "/api/admin/settings"),
     ("GET", "/api/admin/users"),
 ]
+
+
+def test_gesture_returns_success(admin_client):
+    r = admin_client.post("/api/gesture")
+    assert r.status_code == 200
+    assert r.json() == {"success": True}
 
 
 class TestAdminUnauthorized:
